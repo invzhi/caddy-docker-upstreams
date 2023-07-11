@@ -91,6 +91,13 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 		return err
 	}
 
+	ping, err := cli.Ping(ctx)
+	if err != nil {
+		return err
+	}
+
+	u.logger.Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
+
 	options := types.ContainerListOptions{
 		Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
 	}

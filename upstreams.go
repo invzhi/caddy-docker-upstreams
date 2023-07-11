@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -44,29 +45,40 @@ func (u *Upstreams) CaddyModule() caddy.ModuleInfo {
 }
 
 func (u *Upstreams) keepUpdated(ctx context.Context, cli *client.Client) {
-	messages, errs := cli.Events(ctx, types.EventsOptions{
-		Filters: filters.NewArgs(filters.Arg("type", events.ContainerEventType)),
-	})
-
-	options := types.ContainerListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
-	}
-
 	for {
-		select {
-		case <-messages:
-			containers, err := cli.ContainerList(ctx, options)
-			if err != nil {
-				u.logger.Error("cannot get the list of containers", zap.Error(err))
-				continue
-			}
+		messages, errs := cli.Events(ctx, types.EventsOptions{
+			Filters: filters.NewArgs(filters.Arg("type", events.ContainerEventType)),
+		})
 
-			u.mu.Lock()
-			u.containers = containers
-			u.mu.Unlock()
-		case err := <-errs:
-			u.logger.Error("container event listener is stopped", zap.Error(err))
+	selectLoop:
+		for {
+			select {
+			case <-messages:
+				containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
+					Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
+				})
+				if err != nil {
+					u.logger.Error("unable to get the list of containers", zap.Error(err))
+					continue
+				}
+
+				u.mu.Lock()
+				u.containers = containers
+				u.mu.Unlock()
+			case err := <-errs:
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+
+				u.logger.Warn("unable to monitor container events; will retry", zap.Error(err))
+				break selectLoop
+			}
+		}
+
+		select {
+		case <-ctx.Done():
 			return
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }
@@ -129,7 +141,7 @@ var (
 	addressesMu sync.RWMutex
 )
 
-func upstreamOf(container types.Container) (*reverseproxy.Upstream, error) {
+func toUpstream(container types.Container) (*reverseproxy.Upstream, error) {
 	addressesMu.RLock()
 	cached, ok := addresses[container.ID]
 	addressesMu.RUnlock()
@@ -139,7 +151,7 @@ func upstreamOf(container types.Container) (*reverseproxy.Upstream, error) {
 
 	port, ok := container.Labels[LabelUpstreamPort]
 	if !ok {
-		return nil, errors.New("cannot get port from container labels")
+		return nil, errors.New("unable to get port from container labels")
 	}
 
 	// Use the first networks of container.
@@ -154,7 +166,7 @@ func upstreamOf(container types.Container) (*reverseproxy.Upstream, error) {
 		return upstream, nil
 	}
 
-	return nil, errors.New("cannot get ip address from container networks")
+	return nil, errors.New("unable to get ip address from container networks")
 }
 
 func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {
@@ -169,9 +181,9 @@ func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, err
 			continue
 		}
 
-		upstream, err := upstreamOf(container)
+		upstream, err := toUpstream(container)
 		if err != nil {
-			u.logger.Warn("cannot get upstream of container", zap.Error(err))
+			u.logger.Warn("unable to get upstream from container", zap.Error(err))
 			continue
 		}
 		upstreams = append(upstreams, upstream)

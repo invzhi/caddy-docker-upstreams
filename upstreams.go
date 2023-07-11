@@ -115,11 +115,14 @@ func match(r *http.Request, container types.Container) bool {
 }
 
 var (
-	addresses = make(map[string]*reverseproxy.Upstream)
+	addresses   = make(map[string]*reverseproxy.Upstream)
+	addressesMu sync.RWMutex
 )
 
 func upstreamOf(container types.Container) (*reverseproxy.Upstream, error) {
+	addressesMu.RLock()
 	cached, ok := addresses[container.ID]
+	addressesMu.RUnlock()
 	if ok {
 		return cached, nil
 	}
@@ -134,7 +137,10 @@ func upstreamOf(container types.Container) (*reverseproxy.Upstream, error) {
 		address := net.JoinHostPort(network.IPAddress, port)
 		upstream := &reverseproxy.Upstream{Dial: address}
 
+		addressesMu.Lock()
 		addresses[container.ID] = upstream
+		addressesMu.Unlock()
+
 		return upstream, nil
 	}
 

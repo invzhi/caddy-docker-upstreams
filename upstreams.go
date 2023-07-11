@@ -79,6 +79,16 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 		return err
 	}
 
+	options := types.ContainerListOptions{
+		Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
+	}
+	containers, err := cli.ContainerList(ctx, options)
+	if err != nil {
+		return err
+	}
+
+	u.containers = containers
+
 	go u.keepUpdated(ctx, cli)
 
 	return nil

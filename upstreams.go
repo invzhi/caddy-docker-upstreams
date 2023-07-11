@@ -1,14 +1,17 @@
 package caddy_docker_upstreams
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
+	"sync"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"go.uber.org/zap"
@@ -22,19 +25,49 @@ const (
 )
 
 func init() {
-	caddy.RegisterModule(Upstreams{})
+	caddy.RegisterModule(&Upstreams{})
 }
 
-// Upstreams provides upstreams from docker containers.
+// Upstreams provides upstreams from the docker host.
 type Upstreams struct {
 	logger *zap.Logger
-	client *client.Client
+
+	mu         sync.RWMutex
+	containers []types.Container
 }
 
-func (Upstreams) CaddyModule() caddy.ModuleInfo {
+func (u *Upstreams) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.reverse_proxy.upstreams.docker",
 		New: func() caddy.Module { return new(Upstreams) },
+	}
+}
+
+func (u *Upstreams) keepUpdated(ctx context.Context, cli *client.Client) {
+	messages, errs := cli.Events(ctx, types.EventsOptions{
+		Filters: filters.NewArgs(filters.Arg("type", events.ContainerEventType)),
+	})
+
+	options := types.ContainerListOptions{
+		Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
+	}
+
+	for {
+		select {
+		case <-messages:
+			containers, err := cli.ContainerList(ctx, options)
+			if err != nil {
+				u.logger.Error("cannot get the list of containers", zap.Error(err))
+				continue
+			}
+
+			u.mu.Lock()
+			u.containers = containers
+			u.mu.Unlock()
+		case err := <-errs:
+			u.logger.Error("container event listener is stopped", zap.Error(err))
+			return
+		}
 	}
 }
 
@@ -45,7 +78,8 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return err
 	}
-	u.client = cli
+
+	go u.keepUpdated(ctx, cli)
 
 	return nil
 }
@@ -108,18 +142,12 @@ func upstreamOf(container types.Container) (*reverseproxy.Upstream, error) {
 }
 
 func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {
-	options := types.ContainerListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
-	}
-
-	containers, err := u.client.ContainerList(r.Context(), options)
-	if err != nil {
-		return nil, err
-	}
-
 	upstreams := make([]*reverseproxy.Upstream, 0, 1)
 
-	for _, container := range containers {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
+	for _, container := range u.containers {
 		ok := match(r, container)
 		if !ok {
 			continue

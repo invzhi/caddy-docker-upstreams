@@ -65,9 +65,18 @@ func (u *Upstreams) toCandidates(ctx caddy.Context, containers []types.Container
 				continue
 			}
 
-			matcher := producer(value)
+			matcher, err := producer(value)
+			if err != nil {
+				u.logger.Error("unable to load matcher",
+					zap.String("key", key),
+					zap.String("value", value),
+					zap.Error(err),
+				)
+				continue
+			}
+
 			if prov, ok := matcher.(caddy.Provisioner); ok {
-				err := prov.Provision(ctx)
+				err = prov.Provision(ctx)
 				if err != nil {
 					u.logger.Error("unable to provision matcher",
 						zap.String("key", key),
@@ -77,6 +86,7 @@ func (u *Upstreams) toCandidates(ctx caddy.Context, containers []types.Container
 					continue
 				}
 			}
+
 			matchers = append(matchers, matcher)
 		}
 

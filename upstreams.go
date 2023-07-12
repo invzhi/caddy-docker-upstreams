@@ -47,7 +47,7 @@ func (u *Upstreams) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (u *Upstreams) toCandidates(ctx caddy.Context, containers []types.Container) []candidate {
+func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Container) {
 	candidates := make([]candidate, 0, len(containers))
 
 	for _, container := range containers {
@@ -115,7 +115,9 @@ func (u *Upstreams) toCandidates(ctx caddy.Context, containers []types.Container
 		}
 	}
 
-	return candidates
+	u.mu.Lock()
+	u.candidates = candidates
+	u.mu.Unlock()
 }
 
 func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
@@ -135,12 +137,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 					u.logger.Error("unable to get the list of containers", zap.Error(err))
 					continue
 				}
-
-				candidates := u.toCandidates(ctx, containers)
-
-				u.mu.Lock()
-				u.candidates = candidates
-				u.mu.Unlock()
+				u.provisionCandidates(ctx, containers)
 			case err := <-errs:
 				if errors.Is(err, context.Canceled) {
 					return
@@ -174,15 +171,14 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 
 	u.logger.Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
 
-	options := types.ContainerListOptions{
+	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
 		Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
-	}
-	containers, err := cli.ContainerList(ctx, options)
+	})
 	if err != nil {
 		return err
 	}
 
-	u.candidates = u.toCandidates(ctx, containers)
+	u.provisionCandidates(ctx, containers)
 
 	go u.keepUpdated(ctx, cli)
 

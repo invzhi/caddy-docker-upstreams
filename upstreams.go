@@ -20,8 +20,6 @@ import (
 
 const (
 	LabelEnable       = "com.caddyserver.http.enable"
-	LabelMatchHost    = "com.caddyserver.http.matchers.host"
-	LabelMatchPath    = "com.caddyserver.http.matchers.path"
 	LabelUpstreamPort = "com.caddyserver.http.upstream.port"
 )
 
@@ -29,12 +27,17 @@ func init() {
 	caddy.RegisterModule(&Upstreams{})
 }
 
+type candidate struct {
+	matchers caddyhttp.MatcherSet
+	upstream *reverseproxy.Upstream
+}
+
 // Upstreams provides upstreams from the docker host.
 type Upstreams struct {
 	logger *zap.Logger
 
 	mu         sync.RWMutex
-	containers []types.Container
+	candidates []candidate
 }
 
 func (u *Upstreams) CaddyModule() caddy.ModuleInfo {
@@ -44,7 +47,68 @@ func (u *Upstreams) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (u *Upstreams) keepUpdated(ctx context.Context, cli *client.Client) {
+func (u *Upstreams) toCandidates(ctx caddy.Context, containers []types.Container) []candidate {
+	candidates := make([]candidate, 0, len(containers))
+
+	for _, container := range containers {
+		// Check enable.
+		if enable, ok := container.Labels[LabelEnable]; !ok || enable != "true" {
+			continue
+		}
+
+		// Build matchers.
+		var matchers caddyhttp.MatcherSet
+
+		for key, producer := range producers {
+			value, ok := container.Labels[key]
+			if !ok {
+				continue
+			}
+
+			matcher := producer(value)
+			if prov, ok := matcher.(caddy.Provisioner); ok {
+				err := prov.Provision(ctx)
+				if err != nil {
+					u.logger.Error("unable to provision matcher",
+						zap.String("key", key),
+						zap.String("value", value),
+						zap.Error(err),
+					)
+					continue
+				}
+			}
+			matchers = append(matchers, matcher)
+		}
+
+		// Build upstream.
+		port, ok := container.Labels[LabelUpstreamPort]
+		if !ok {
+			u.logger.Error("unable to get port from container labels", zap.String("container_id", container.ID))
+			continue
+		}
+
+		if len(container.NetworkSettings.Networks) == 0 {
+			u.logger.Error("unable to get ip address from container networks", zap.String("container_id", container.ID))
+			continue
+		}
+
+		// Use the first network settings of container.
+		for _, settings := range container.NetworkSettings.Networks {
+			address := net.JoinHostPort(settings.IPAddress, port)
+			upstream := &reverseproxy.Upstream{Dial: address}
+
+			candidates = append(candidates, candidate{
+				matchers: matchers,
+				upstream: upstream,
+			})
+			break
+		}
+	}
+
+	return candidates
+}
+
+func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 	for {
 		messages, errs := cli.Events(ctx, types.EventsOptions{
 			Filters: filters.NewArgs(filters.Arg("type", events.ContainerEventType)),
@@ -62,8 +126,10 @@ func (u *Upstreams) keepUpdated(ctx context.Context, cli *client.Client) {
 					continue
 				}
 
+				candidates := u.toCandidates(ctx, containers)
+
 				u.mu.Lock()
-				u.containers = containers
+				u.candidates = candidates
 				u.mu.Unlock()
 			case err := <-errs:
 				if errors.Is(err, context.Canceled) {
@@ -106,74 +172,11 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 		return err
 	}
 
-	u.containers = containers
+	u.candidates = u.toCandidates(ctx, containers)
 
 	go u.keepUpdated(ctx, cli)
 
 	return nil
-}
-
-var matchers = map[string]func(string) caddyhttp.RequestMatcher{
-	// TODO: more matchers
-	LabelMatchHost: func(value string) caddyhttp.RequestMatcher {
-		return caddyhttp.MatchHost([]string{value})
-	},
-	LabelMatchPath: func(value string) caddyhttp.RequestMatcher {
-		return caddyhttp.MatchPath([]string{value})
-	},
-}
-
-func match(r *http.Request, container types.Container) bool {
-	if enable, ok := container.Labels[LabelEnable]; !ok || enable != "true" {
-		return false
-	}
-
-	for key, matcher := range matchers {
-		value, ok := container.Labels[key]
-		if !ok {
-			continue
-		}
-
-		m := matcher(value)
-		if !m.Match(r) {
-			return false
-		}
-	}
-
-	return true
-}
-
-var (
-	addresses   = make(map[string]*reverseproxy.Upstream)
-	addressesMu sync.RWMutex
-)
-
-func toUpstream(container types.Container) (*reverseproxy.Upstream, error) {
-	addressesMu.RLock()
-	cached, ok := addresses[container.ID]
-	addressesMu.RUnlock()
-	if ok {
-		return cached, nil
-	}
-
-	port, ok := container.Labels[LabelUpstreamPort]
-	if !ok {
-		return nil, errors.New("unable to get port from container labels")
-	}
-
-	// Use the first networks of container.
-	for _, network := range container.NetworkSettings.Networks {
-		address := net.JoinHostPort(network.IPAddress, port)
-		upstream := &reverseproxy.Upstream{Dial: address}
-
-		addressesMu.Lock()
-		addresses[container.ID] = upstream
-		addressesMu.Unlock()
-
-		return upstream, nil
-	}
-
-	return nil, errors.New("unable to get ip address from container networks")
 }
 
 func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {
@@ -182,18 +185,12 @@ func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, err
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 
-	for _, container := range u.containers {
-		ok := match(r, container)
-		if !ok {
+	for _, container := range u.candidates {
+		if !container.matchers.Match(r) {
 			continue
 		}
 
-		upstream, err := toUpstream(container)
-		if err != nil {
-			u.logger.Warn("unable to get upstream from container", zap.Error(err))
-			continue
-		}
-		upstreams = append(upstreams, upstream)
+		upstreams = append(upstreams, container.upstream)
 	}
 
 	return upstreams, nil

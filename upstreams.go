@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bep/debounce"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
@@ -93,12 +94,16 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 		// Build upstream.
 		port, ok := container.Labels[LabelUpstreamPort]
 		if !ok {
-			u.logger.Error("unable to get port from container labels", zap.String("container_id", container.ID))
+			u.logger.Error("unable to get port from container labels",
+				zap.String("container_id", container.ID),
+			)
 			continue
 		}
 
 		if len(container.NetworkSettings.Networks) == 0 {
-			u.logger.Error("unable to get ip address from container networks", zap.String("container_id", container.ID))
+			u.logger.Error("unable to get ip address from container networks",
+				zap.String("container_id", container.ID),
+			)
 			continue
 		}
 
@@ -121,6 +126,8 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 }
 
 func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
+	debounced := debounce.New(100 * time.Millisecond)
+
 	for {
 		messages, errs := cli.Events(ctx, types.EventsOptions{
 			Filters: filters.NewArgs(filters.Arg("type", events.ContainerEventType)),
@@ -130,14 +137,17 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 		for {
 			select {
 			case <-messages:
-				containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
-					Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
+				debounced(func() {
+					containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
+						Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
+					})
+					if err != nil {
+						u.logger.Error("unable to get the list of containers", zap.Error(err))
+						return
+					}
+
+					u.provisionCandidates(ctx, containers)
 				})
-				if err != nil {
-					u.logger.Error("unable to get the list of containers", zap.Error(err))
-					continue
-				}
-				u.provisionCandidates(ctx, containers)
 			case err := <-errs:
 				if errors.Is(err, context.Canceled) {
 					return

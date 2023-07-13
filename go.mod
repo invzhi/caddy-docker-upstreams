@@ -3,6 +3,7 @@ module github.com/invzhi/caddy-docker-upstreams
 go 1.20
 
 require (
+	github.com/bep/debounce v1.2.1
 	github.com/caddyserver/caddy/v2 v2.6.4
 	github.com/docker/docker v24.0.4+incompatible
 	go.uber.org/zap v1.24.0

@@ -33,12 +33,14 @@ type candidate struct {
 	upstream *reverseproxy.Upstream
 }
 
+var (
+	candidates   []candidate
+	candidatesMu sync.RWMutex
+)
+
 // Upstreams provides upstreams from the docker host.
 type Upstreams struct {
 	logger *zap.Logger
-
-	mu         sync.RWMutex
-	candidates []candidate
 }
 
 func (Upstreams) CaddyModule() caddy.ModuleInfo {
@@ -49,7 +51,7 @@ func (Upstreams) CaddyModule() caddy.ModuleInfo {
 }
 
 func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Container) {
-	candidates := make([]candidate, 0, len(containers))
+	updated := make([]candidate, 0, len(containers))
 
 	for _, container := range containers {
 		// Check enable.
@@ -112,7 +114,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 			address := net.JoinHostPort(settings.IPAddress, port)
 			upstream := &reverseproxy.Upstream{Dial: address}
 
-			candidates = append(candidates, candidate{
+			updated = append(updated, candidate{
 				matchers: matchers,
 				upstream: upstream,
 			})
@@ -120,9 +122,9 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 		}
 	}
 
-	u.mu.Lock()
-	u.candidates = candidates
-	u.mu.Unlock()
+	candidatesMu.Lock()
+	candidates = updated
+	candidatesMu.Unlock()
 }
 
 func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
@@ -198,10 +200,10 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {
 	upstreams := make([]*reverseproxy.Upstream, 0, 1)
 
-	u.mu.RLock()
-	defer u.mu.RUnlock()
+	candidatesMu.RLock()
+	defer candidatesMu.RUnlock()
 
-	for _, container := range u.candidates {
+	for _, container := range candidates {
 		if !container.matchers.Match(r) {
 			continue
 		}

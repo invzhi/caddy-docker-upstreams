@@ -25,7 +25,7 @@ const (
 )
 
 func init() {
-	caddy.RegisterModule(new(Upstreams))
+	caddy.RegisterModule(Upstreams{})
 }
 
 type candidate struct {
@@ -41,7 +41,7 @@ type Upstreams struct {
 	candidates []candidate
 }
 
-func (u *Upstreams) CaddyModule() caddy.ModuleInfo {
+func (Upstreams) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.reverse_proxy.upstreams.docker",
 		New: func() caddy.Module { return new(Upstreams) },

@@ -25,7 +25,7 @@ const (
 )
 
 func init() {
-	caddy.RegisterModule(&Upstreams{})
+	caddy.RegisterModule(new(Upstreams))
 }
 
 type candidate struct {

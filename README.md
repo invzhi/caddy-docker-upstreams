@@ -22,7 +22,7 @@ As well as the labels corresponding to the matcher.
 | `com.caddyserver.http.matchers.query`      | [query](https://caddyserver.com/docs/caddyfile/matchers#query)           |
 | `com.caddyserver.http.matchers.expression` | [expression](https://caddyserver.com/docs/caddyfile/matchers#expression) |
 
-Here is an example with [vaultwarden](https://github.com/dani-garcia/vaultwarden).
+Here is a docker-compose.yml example with [vaultwarden](https://github.com/dani-garcia/vaultwarden).
 
 ```yaml
 vaultwarden:

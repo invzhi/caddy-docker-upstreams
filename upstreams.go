@@ -13,6 +13,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -53,9 +54,9 @@ func (Upstreams) CaddyModule() caddy.ModuleInfo {
 func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Container) {
 	updated := make([]candidate, 0, len(containers))
 
-	for _, container := range containers {
+	for _, c := range containers {
 		// Check enable.
-		if enable, ok := container.Labels[LabelEnable]; !ok || enable != "true" {
+		if enable, ok := c.Labels[LabelEnable]; !ok || enable != "true" {
 			continue
 		}
 
@@ -63,7 +64,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 		var matchers caddyhttp.MatcherSet
 
 		for key, producer := range producers {
-			value, ok := container.Labels[key]
+			value, ok := c.Labels[key]
 			if !ok {
 				continue
 			}
@@ -94,23 +95,23 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 		}
 
 		// Build upstream.
-		port, ok := container.Labels[LabelUpstreamPort]
+		port, ok := c.Labels[LabelUpstreamPort]
 		if !ok {
 			u.logger.Error("unable to get port from container labels",
-				zap.String("container_id", container.ID),
+				zap.String("container_id", c.ID),
 			)
 			continue
 		}
 
-		if len(container.NetworkSettings.Networks) == 0 {
+		if len(c.NetworkSettings.Networks) == 0 {
 			u.logger.Error("unable to get ip address from container networks",
-				zap.String("container_id", container.ID),
+				zap.String("container_id", c.ID),
 			)
 			continue
 		}
 
 		// Use the first network settings of container.
-		for _, settings := range container.NetworkSettings.Networks {
+		for _, settings := range c.NetworkSettings.Networks {
 			address := net.JoinHostPort(settings.IPAddress, port)
 			upstream := &reverseproxy.Upstream{Dial: address}
 
@@ -132,7 +133,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 
 	for {
 		messages, errs := cli.Events(ctx, types.EventsOptions{
-			Filters: filters.NewArgs(filters.Arg("type", events.ContainerEventType)),
+			Filters: filters.NewArgs(filters.Arg("type", string(events.ContainerEventType))),
 		})
 
 	selectLoop:
@@ -140,7 +141,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 			select {
 			case <-messages:
 				debounced(func() {
-					containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
+					containers, err := cli.ContainerList(ctx, container.ListOptions{
 						Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
 					})
 					if err != nil {
@@ -183,7 +184,7 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 
 	u.logger.Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
 
-	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
+	containers, err := cli.ContainerList(ctx, container.ListOptions{
 		Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
 	})
 	if err != nil {
@@ -203,12 +204,12 @@ func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, err
 	candidatesMu.RLock()
 	defer candidatesMu.RUnlock()
 
-	for _, container := range candidates {
-		if !container.matchers.Match(r) {
+	for _, c := range candidates {
+		if !c.matchers.Match(r) {
 			continue
 		}
 
-		upstreams = append(upstreams, container.upstream)
+		upstreams = append(upstreams, c.upstream)
 	}
 
 	return upstreams, nil

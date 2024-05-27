@@ -22,6 +22,7 @@ import (
 
 const (
 	LabelEnable       = "com.caddyserver.http.enable"
+	LabelNetwork      = "com.caddyserver.http.network"
 	LabelUpstreamPort = "com.caddyserver.http.upstream.port"
 )
 
@@ -61,38 +62,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 		}
 
 		// Build matchers.
-		var matchers caddyhttp.MatcherSet
-
-		for key, producer := range producers {
-			value, ok := c.Labels[key]
-			if !ok {
-				continue
-			}
-
-			matcher, err := producer(value)
-			if err != nil {
-				u.logger.Error("unable to load matcher",
-					zap.String("key", key),
-					zap.String("value", value),
-					zap.Error(err),
-				)
-				continue
-			}
-
-			if prov, ok := matcher.(caddy.Provisioner); ok {
-				err = prov.Provision(ctx)
-				if err != nil {
-					u.logger.Error("unable to provision matcher",
-						zap.String("key", key),
-						zap.String("value", value),
-						zap.Error(err),
-					)
-					continue
-				}
-			}
-
-			matchers = append(matchers, matcher)
-		}
+		matchers := buildMatchers(ctx, u.logger, c.Labels)
 
 		// Build upstream.
 		port, ok := c.Labels[LabelUpstreamPort]
@@ -103,6 +73,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 			continue
 		}
 
+		// Choose network to connect.
 		if len(c.NetworkSettings.Networks) == 0 {
 			u.logger.Error("unable to get ip address from container networks",
 				zap.String("container_id", c.ID),
@@ -110,17 +81,34 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 			continue
 		}
 
-		// Use the first network settings of container.
-		for _, settings := range c.NetworkSettings.Networks {
-			address := net.JoinHostPort(settings.IPAddress, port)
-			upstream := &reverseproxy.Upstream{Dial: address}
-
-			updated = append(updated, candidate{
-				matchers: matchers,
-				upstream: upstream,
-			})
-			break
+		network, ok := c.Labels[LabelNetwork]
+		if !ok {
+			// Use the first network settings of container.
+			for _, settings := range c.NetworkSettings.Networks {
+				address := net.JoinHostPort(settings.IPAddress, port)
+				updated = append(updated, candidate{
+					matchers: matchers,
+					upstream: &reverseproxy.Upstream{Dial: address},
+				})
+				break
+			}
+			continue
 		}
+
+		settings, ok := c.NetworkSettings.Networks[network]
+		if !ok {
+			u.logger.Error("unable to get network settings from container",
+				zap.String("container_id", c.ID),
+				zap.String("network", network),
+			)
+			continue
+		}
+
+		address := net.JoinHostPort(settings.IPAddress, port)
+		updated = append(updated, candidate{
+			matchers: matchers,
+			upstream: &reverseproxy.Upstream{Dial: address},
+		})
 	}
 
 	candidatesMu.Lock()
@@ -205,11 +193,9 @@ func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, err
 	defer candidatesMu.RUnlock()
 
 	for _, c := range candidates {
-		if !c.matchers.Match(r) {
-			continue
+		if c.matchers.Match(r) {
+			upstreams = append(upstreams, c.upstream)
 		}
-
-		upstreams = append(upstreams, c.upstream)
 	}
 
 	return upstreams, nil

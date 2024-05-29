@@ -137,7 +137,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 			select {
 			case <-messages:
 				debounced(func() {
-					containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
+					containers, err := cli.ContainerList(ctx, container.ListOptions{
 						Filters: defaultFilters,
 					})
 					if err != nil {
@@ -180,7 +180,7 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 
 	u.logger.Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
 
-	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
+	containers, err := cli.ContainerList(ctx, container.ListOptions{
 		Filters: defaultFilters,
 	})
 	if err != nil {

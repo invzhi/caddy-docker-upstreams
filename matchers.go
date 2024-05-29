@@ -3,7 +3,9 @@ package caddy_docker_upstreams
 import (
 	"net/url"
 
+	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"go.uber.org/zap"
 )
 
 const (
@@ -38,4 +40,41 @@ var producers = map[string]func(string) (caddyhttp.RequestMatcher, error){
 	LabelMatchExpression: func(value string) (caddyhttp.RequestMatcher, error) {
 		return caddyhttp.MatchExpression{Expr: value}, nil
 	},
+}
+
+func buildMatchers(ctx caddy.Context, logger *zap.Logger, labels map[string]string) caddyhttp.MatcherSet {
+	var matchers caddyhttp.MatcherSet
+
+	for key, producer := range producers {
+		value, ok := labels[key]
+		if !ok {
+			continue
+		}
+
+		matcher, err := producer(value)
+		if err != nil {
+			logger.Error("unable to load matcher",
+				zap.String("key", key),
+				zap.String("value", value),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		if prov, ok := matcher.(caddy.Provisioner); ok {
+			err = prov.Provision(ctx)
+			if err != nil {
+				logger.Error("unable to provision matcher",
+					zap.String("key", key),
+					zap.String("value", value),
+					zap.Error(err),
+				)
+				continue
+			}
+		}
+
+		matchers = append(matchers, matcher)
+	}
+
+	return matchers
 }

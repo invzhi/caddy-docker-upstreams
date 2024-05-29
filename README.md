@@ -9,6 +9,7 @@ Requires Caddy 2+.
 This module requires the Docker Labels to provide the necessary information.
 
 - `com.caddyserver.http.enable` should be `true`
+- `com.caddyserver.http.network` specify the network (if it is empty, the first network of container will be specified)
 - `com.caddyserver.http.upstream.port` specify the port
 
 As well as the labels corresponding to the matcher.

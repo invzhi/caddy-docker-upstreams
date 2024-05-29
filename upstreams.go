@@ -38,6 +38,14 @@ var (
 	candidatesMu sync.RWMutex
 )
 
+var defaultFilters = filters.NewArgs(
+	filters.Arg("label", LabelEnable),
+	// types.ContainerState.Status
+	filters.Arg("status", "running"),
+	filters.Arg("health", types.Healthy),
+	filters.Arg("health", types.NoHealthcheck),
+)
+
 // Upstreams provides upstreams from the docker host.
 type Upstreams struct {
 	logger *zap.Logger
@@ -141,7 +149,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 			case <-messages:
 				debounced(func() {
 					containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
-						Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
+						Filters: defaultFilters,
 					})
 					if err != nil {
 						u.logger.Error("unable to get the list of containers", zap.Error(err))
@@ -184,7 +192,7 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 	u.logger.Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
 
 	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", LabelEnable)),
+		Filters: defaultFilters,
 	})
 	if err != nil {
 		return err

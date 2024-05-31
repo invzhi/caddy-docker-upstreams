@@ -100,11 +100,26 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 
 		settings, ok := c.NetworkSettings.Networks[network]
 		if !ok {
-			u.logger.Error("unable to get network settings from container",
-				zap.String("container_id", c.ID),
-				zap.String("network", network),
-			)
-			continue
+			// Add project prefix. See also https://github.com/compose-spec/compose-go/blob/main/loader/normalize.go.
+			const projectLabel = "com.docker.compose.project"
+			project, ok := c.Labels[projectLabel]
+			if !ok {
+				u.logger.Error("unable to get network settings from container",
+					zap.String("container_id", c.ID),
+					zap.String("network", network),
+				)
+				continue
+			}
+
+			network = fmt.Sprintf("%s_%s", project, network)
+			settings, ok = c.NetworkSettings.Networks[network]
+			if !ok {
+				u.logger.Error("unable to get network settings from container",
+					zap.String("container_id", c.ID),
+					zap.String("network", network),
+				)
+				continue
+			}
 		}
 
 		address := net.JoinHostPort(settings.IPAddress, port)

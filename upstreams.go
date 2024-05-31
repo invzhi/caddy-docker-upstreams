@@ -3,6 +3,7 @@ package caddy_docker_upstreams
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -41,9 +42,8 @@ var (
 )
 
 var defaultFilters = filters.NewArgs(
-	filters.Arg("label", LabelEnable),
-	// types.ContainerState.Status
-	filters.Arg("status", "running"),
+	filters.Arg("label", fmt.Sprintf("%s=true", LabelEnable)),
+	filters.Arg("status", "running"), // types.ContainerState.Status
 	filters.Arg("health", types.Healthy),
 	filters.Arg("health", types.NoHealthcheck),
 )
@@ -64,11 +64,6 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 	updated := make([]candidate, 0, len(containers))
 
 	for _, c := range containers {
-		// Check enable.
-		if enable, ok := c.Labels[LabelEnable]; !ok || enable != "true" {
-			continue
-		}
-
 		// Build matchers.
 		matchers := buildMatchers(ctx, u.logger, c.Labels)
 
@@ -137,9 +132,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 			select {
 			case <-messages:
 				debounced(func() {
-					containers, err := cli.ContainerList(ctx, container.ListOptions{
-						Filters: defaultFilters,
-					})
+					containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
 					if err != nil {
 						u.logger.Error("unable to get the list of containers", zap.Error(err))
 						return
@@ -180,9 +173,7 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 
 	u.logger.Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
 
-	containers, err := cli.ContainerList(ctx, container.ListOptions{
-		Filters: defaultFilters,
-	})
+	containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
 	if err != nil {
 		return err
 	}

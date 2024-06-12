@@ -4,13 +4,47 @@ This package implements a docker dynamic upstreams module for Caddy.
 
 Requires Caddy 2+.
 
+## Installation
+
+Download from [official website](https://caddyserver.com/download?package=github.com%2Finvzhi%2Fcaddy-docker-upstreams)
+or build yourself using [xcaddy](https://github.com/caddyserver/xcaddy).
+
+Here is a Dockerfile example.
+
+```dockerfile
+FROM caddy:<version>-builder AS builder
+
+RUN xcaddy build \
+    --with github.com/invzhi/caddy-docker-upstreams
+
+FROM caddy:<version>
+
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+```
+
+## Syntax
+
+List all your domain or use [On-Demand TLS](https://caddyserver.com/docs/automatic-https#on-demand-tls).
+
+```
+app1.example.com,
+app2.example.com,
+app3.example.com {
+    reverse_proxy {
+        dynamic docker
+    }
+}
+```
+
 ## Docker Labels
 
 This module requires the Docker Labels to provide the necessary information.
 
-- `com.caddyserver.http.enable` should be `true`
-- `com.caddyserver.http.network` specify the network (if it is empty, the first network of container will be specified)
-- `com.caddyserver.http.upstream.port` specify the port
+| Label                                | Description                                                                                                                            |
+|--------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| `com.caddyserver.http.enable`        | required, should be `true`                                                                                                             |
+| `com.caddyserver.http.network`       | optional, specify the docker network which caddy connecting through (if it is empty, the first network of container will be specified) |
+| `com.caddyserver.http.upstream.port` | required, specify the port                                                                                                             |
 
 As well as the labels corresponding to the matcher.
 
@@ -39,16 +73,11 @@ vaultwarden:
     DOMAIN: https://vaultwarden.example.com
 ```
 
-## Syntax
+## Docker Client
 
-List all your domain or use [On-Demand TLS](https://caddyserver.com/docs/automatic-https#on-demand-tls).
+Environment variables could configure the docker client:
 
-```
-app1.example.com,
-app2.example.com,
-app3.example.com {
-    reverse_proxy {
-        dynamic docker
-    }
-}
-```
+- `DOCKER_HOST` to set the URL to the docker server.
+- `DOCKER_API_VERSION` to set the version of the API to use, leave empty for latest.
+- `DOCKER_CERT_PATH` to specify the directory from which to load the TLS certificates ("ca.pem", "cert.pem", "key.pem').
+- `DOCKER_TLS_VERIFY` to enable or disable TLS verification (off by default).

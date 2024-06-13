@@ -172,6 +172,19 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 	}
 }
 
+func (u *Upstreams) provision(ctx caddy.Context, cli *client.Client) error {
+	containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
+	if err != nil {
+		return err
+	}
+
+	u.provisionCandidates(ctx, containers)
+
+	go u.keepUpdated(ctx, cli)
+
+	return nil
+}
+
 func (u *Upstreams) Provision(ctx caddy.Context) error {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -186,16 +199,7 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 
 	ctx.Logger().Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
 
-	containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
-	if err != nil {
-		return err
-	}
-
-	u.provisionCandidates(ctx, containers)
-
-	go u.keepUpdated(ctx, cli)
-
-	return nil
+	return u.provision(ctx, cli)
 }
 
 func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {

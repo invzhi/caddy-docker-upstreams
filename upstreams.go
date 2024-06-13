@@ -49,8 +49,7 @@ var defaultFilters = filters.NewArgs(
 )
 
 // Upstreams provides upstreams from the docker host.
-type Upstreams struct {
-}
+type Upstreams struct{}
 
 func (Upstreams) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
@@ -59,7 +58,12 @@ func (Upstreams) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Container) {
+func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli *client.Client) error {
+	containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
+	if err != nil {
+		return fmt.Errorf("listing docker containers: %w", err)
+	}
+
 	updated := make([]candidate, 0, len(containers))
 
 	for _, c := range containers {
@@ -131,9 +135,13 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 	candidatesMu.Lock()
 	candidates = updated
 	candidatesMu.Unlock()
+
+	return nil
 }
 
 func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
+	defer cli.Close()
+
 	debounced := debounce.New(100 * time.Millisecond)
 
 	for {
@@ -146,13 +154,10 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 			select {
 			case <-messages:
 				debounced(func() {
-					containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
+					err := u.provisionCandidates(ctx, cli)
 					if err != nil {
-						ctx.Logger().Error("unable to get the list of containers", zap.Error(err))
-						return
+						ctx.Logger().Error("unable to provision the candidates", zap.Error(err))
 					}
-
-					u.provisionCandidates(ctx, containers)
 				})
 			case err := <-errs:
 				if errors.Is(err, context.Canceled) {
@@ -173,12 +178,10 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 }
 
 func (u *Upstreams) provision(ctx caddy.Context, cli *client.Client) error {
-	containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
+	err := u.provisionCandidates(ctx, cli)
 	if err != nil {
 		return err
 	}
-
-	u.provisionCandidates(ctx, containers)
 
 	go u.keepUpdated(ctx, cli)
 
@@ -188,16 +191,14 @@ func (u *Upstreams) provision(ctx caddy.Context, cli *client.Client) error {
 func (u *Upstreams) Provision(ctx caddy.Context) error {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		return err
+		return fmt.Errorf("provisioning docker client: %w", err)
 	}
-	ctx.OnCancel(func() { _ = cli.Close() })
 
 	ping, err := cli.Ping(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("ping docker server: %w", err)
 	}
-
-	ctx.Logger().Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
+	ctx.Logger().Info("connected docker server", zap.String("api_version", ping.APIVersion))
 
 	return u.provision(ctx, cli)
 }

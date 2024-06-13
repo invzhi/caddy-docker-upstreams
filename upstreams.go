@@ -50,7 +50,6 @@ var defaultFilters = filters.NewArgs(
 
 // Upstreams provides upstreams from the docker host.
 type Upstreams struct {
-	logger *zap.Logger
 }
 
 func (Upstreams) CaddyModule() caddy.ModuleInfo {
@@ -65,12 +64,12 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 
 	for _, c := range containers {
 		// Build matchers.
-		matchers := buildMatchers(ctx, u.logger, c.Labels)
+		matchers := buildMatchers(ctx, c.Labels)
 
 		// Build upstream.
 		port, ok := c.Labels[LabelUpstreamPort]
 		if !ok {
-			u.logger.Error("unable to get port from container labels",
+			ctx.Logger().Error("unable to get port from container labels",
 				zap.String("container_id", c.ID),
 			)
 			continue
@@ -78,7 +77,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 
 		// Choose network to connect.
 		if len(c.NetworkSettings.Networks) == 0 {
-			u.logger.Error("unable to get ip address from container networks",
+			ctx.Logger().Error("unable to get ip address from container networks",
 				zap.String("container_id", c.ID),
 			)
 			continue
@@ -104,7 +103,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 			const projectLabel = "com.docker.compose.project"
 			project, ok := c.Labels[projectLabel]
 			if !ok {
-				u.logger.Error("unable to get network settings from container",
+				ctx.Logger().Error("unable to get network settings from container",
 					zap.String("container_id", c.ID),
 					zap.String("network", network),
 				)
@@ -114,7 +113,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, containers []types.Co
 			network = fmt.Sprintf("%s_%s", project, network)
 			settings, ok = c.NetworkSettings.Networks[network]
 			if !ok {
-				u.logger.Error("unable to get network settings from container",
+				ctx.Logger().Error("unable to get network settings from container",
 					zap.String("container_id", c.ID),
 					zap.String("network", network),
 				)
@@ -149,7 +148,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 				debounced(func() {
 					containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
 					if err != nil {
-						u.logger.Error("unable to get the list of containers", zap.Error(err))
+						ctx.Logger().Error("unable to get the list of containers", zap.Error(err))
 						return
 					}
 
@@ -160,7 +159,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 					return
 				}
 
-				u.logger.Warn("unable to monitor container events; will retry", zap.Error(err))
+				ctx.Logger().Warn("unable to monitor container events; will retry", zap.Error(err))
 				break selectLoop
 			}
 		}
@@ -174,19 +173,18 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 }
 
 func (u *Upstreams) Provision(ctx caddy.Context) error {
-	u.logger = ctx.Logger()
-
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return err
 	}
+	ctx.OnCancel(func() { _ = cli.Close() })
 
 	ping, err := cli.Ping(ctx)
 	if err != nil {
 		return err
 	}
 
-	u.logger.Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
+	ctx.Logger().Info("docker engine is connected", zap.String("api_version", ping.APIVersion))
 
 	containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
 	if err != nil {

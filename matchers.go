@@ -42,7 +42,7 @@ var producers = map[string]func(string) (caddyhttp.RequestMatcher, error){
 	},
 }
 
-func buildMatchers(ctx caddy.Context, logger *zap.Logger, labels map[string]string) caddyhttp.MatcherSet {
+func buildMatchers(ctx caddy.Context, labels map[string]string) caddyhttp.MatcherSet {
 	var matchers caddyhttp.MatcherSet
 
 	for key, producer := range producers {
@@ -53,7 +53,7 @@ func buildMatchers(ctx caddy.Context, logger *zap.Logger, labels map[string]stri
 
 		matcher, err := producer(value)
 		if err != nil {
-			logger.Error("unable to load matcher",
+			ctx.Logger().Error("unable to load matcher",
 				zap.String("key", key),
 				zap.String("value", value),
 				zap.Error(err),
@@ -64,7 +64,7 @@ func buildMatchers(ctx caddy.Context, logger *zap.Logger, labels map[string]stri
 		if prov, ok := matcher.(caddy.Provisioner); ok {
 			err = prov.Provision(ctx)
 			if err != nil {
-				logger.Error("unable to provision matcher",
+				ctx.Logger().Error("unable to provision matcher",
 					zap.String("key", key),
 					zap.String("value", value),
 					zap.Error(err),

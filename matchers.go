@@ -19,23 +19,25 @@ const (
 
 var producers = map[string]func(string) (caddyhttp.RequestMatcher, error){
 	LabelMatchProtocol: func(value string) (caddyhttp.RequestMatcher, error) {
-		return caddyhttp.MatchProtocol(value), nil
+		matcher := caddyhttp.MatchProtocol(value)
+		return &matcher, nil
 	},
 	LabelMatchHost: func(value string) (caddyhttp.RequestMatcher, error) {
-		return caddyhttp.MatchHost{value}, nil
+		return &caddyhttp.MatchHost{value}, nil
 	},
 	LabelMatchMethod: func(value string) (caddyhttp.RequestMatcher, error) {
-		return caddyhttp.MatchMethod{value}, nil
+		return &caddyhttp.MatchMethod{value}, nil
 	},
 	LabelMatchPath: func(value string) (caddyhttp.RequestMatcher, error) {
-		return caddyhttp.MatchPath{value}, nil
+		return &caddyhttp.MatchPath{value}, nil
 	},
 	LabelMatchQuery: func(value string) (caddyhttp.RequestMatcher, error) {
 		query, err := url.ParseQuery(value)
 		if err != nil {
 			return nil, err
 		}
-		return caddyhttp.MatchQuery(query), nil
+		matcher := caddyhttp.MatchQuery(query)
+		return &matcher, nil
 	},
 	LabelMatchExpression: func(value string) (caddyhttp.RequestMatcher, error) {
 		return &caddyhttp.MatchExpression{Expr: value}, nil

@@ -22,7 +22,7 @@ FROM caddy:<version>
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 ```
 
-## Syntax
+## Caddyfile Syntax
 
 List all your domain or use [On-Demand TLS](https://caddyserver.com/docs/automatic-https#on-demand-tls).
 

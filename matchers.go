@@ -38,7 +38,7 @@ var producers = map[string]func(string) (caddyhttp.RequestMatcher, error){
 		return caddyhttp.MatchQuery(query), nil
 	},
 	LabelMatchExpression: func(value string) (caddyhttp.RequestMatcher, error) {
-		return caddyhttp.MatchExpression{Expr: value}, nil
+		return &caddyhttp.MatchExpression{Expr: value}, nil
 	},
 }
 

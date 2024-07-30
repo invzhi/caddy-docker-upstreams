@@ -145,7 +145,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 	debounced := debounce.New(100 * time.Millisecond)
 
 	for {
-		messages, errs := cli.Events(ctx, types.EventsOptions{
+		messages, errs := cli.Events(ctx, events.ListOptions{
 			Filters: filters.NewArgs(filters.Arg("type", string(events.ContainerEventType))),
 		})
 

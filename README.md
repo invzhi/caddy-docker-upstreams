@@ -48,14 +48,14 @@ This module requires the Docker Labels to provide the necessary information.
 
 As well as the labels corresponding to the matcher.
 
-| Label                                      | Matcher                                                                  |
-|--------------------------------------------|--------------------------------------------------------------------------|
-| `com.caddyserver.http.matchers.protocol`   | [protocol](https://caddyserver.com/docs/caddyfile/matchers#protocol)     |
-| `com.caddyserver.http.matchers.host`       | [host](https://caddyserver.com/docs/caddyfile/matchers#host)             |
-| `com.caddyserver.http.matchers.method`     | [method](https://caddyserver.com/docs/caddyfile/matchers#method)         |
-| `com.caddyserver.http.matchers.path`       | [path](https://caddyserver.com/docs/caddyfile/matchers#path)             |
-| `com.caddyserver.http.matchers.query`      | [query](https://caddyserver.com/docs/caddyfile/matchers#query)           |
-| `com.caddyserver.http.matchers.expression` | [expression](https://caddyserver.com/docs/caddyfile/matchers#expression) |
+| Label                                      | Matcher                                                                  | Type       |
+|--------------------------------------------|--------------------------------------------------------------------------|------------|
+| `com.caddyserver.http.matchers.protocol`   | [protocol](https://caddyserver.com/docs/caddyfile/matchers#protocol)     | `string`   |
+| `com.caddyserver.http.matchers.host`       | [host](https://caddyserver.com/docs/caddyfile/matchers#host)             | `[]string` |
+| `com.caddyserver.http.matchers.method`     | [method](https://caddyserver.com/docs/caddyfile/matchers#method)         | `[]string` |
+| `com.caddyserver.http.matchers.path`       | [path](https://caddyserver.com/docs/caddyfile/matchers#path)             | `[]string` |
+| `com.caddyserver.http.matchers.query`      | [query](https://caddyserver.com/docs/caddyfile/matchers#query)           | `string`   |
+| `com.caddyserver.http.matchers.expression` | [expression](https://caddyserver.com/docs/caddyfile/matchers#expression) | `string`   |
 
 Here is a docker-compose.yml example with [vaultwarden](https://github.com/dani-garcia/vaultwarden).
 

@@ -18,21 +18,24 @@ const (
 	LabelMatchExpression = "com.caddyserver.http.matchers.expression"
 )
 
-var producers = map[string]func(string) (caddyhttp.RequestMatcher, error){
-	LabelMatchProtocol: func(value string) (caddyhttp.RequestMatcher, error) {
+var producers = map[string]func(string) (caddyhttp.RequestMatcherWithError, error){
+	LabelMatchProtocol: func(value string) (caddyhttp.RequestMatcherWithError, error) {
 		matcher := caddyhttp.MatchProtocol(value)
 		return &matcher, nil
 	},
-	LabelMatchHost: func(value string) (caddyhttp.RequestMatcher, error) {
-		return caddyhttp.MatchHost(strings.Fields(value)), nil
+	LabelMatchHost: func(value string) (caddyhttp.RequestMatcherWithError, error) {
+		matcher := caddyhttp.MatchHost(strings.Fields(value))
+		return &matcher, nil
 	},
-	LabelMatchMethod: func(value string) (caddyhttp.RequestMatcher, error) {
-		return caddyhttp.MatchMethod(strings.Fields(value)), nil
+	LabelMatchMethod: func(value string) (caddyhttp.RequestMatcherWithError, error) {
+		matcher := caddyhttp.MatchMethod(strings.Fields(value))
+		return &matcher, nil
 	},
-	LabelMatchPath: func(value string) (caddyhttp.RequestMatcher, error) {
-		return caddyhttp.MatchPath(strings.Fields(value)), nil
+	LabelMatchPath: func(value string) (caddyhttp.RequestMatcherWithError, error) {
+		matcher := caddyhttp.MatchPath(strings.Fields(value))
+		return &matcher, nil
 	},
-	LabelMatchQuery: func(value string) (caddyhttp.RequestMatcher, error) {
+	LabelMatchQuery: func(value string) (caddyhttp.RequestMatcherWithError, error) {
 		query, err := url.ParseQuery(value)
 		if err != nil {
 			return nil, err
@@ -40,7 +43,7 @@ var producers = map[string]func(string) (caddyhttp.RequestMatcher, error){
 		matcher := caddyhttp.MatchQuery(query)
 		return &matcher, nil
 	},
-	LabelMatchExpression: func(value string) (caddyhttp.RequestMatcher, error) {
+	LabelMatchExpression: func(value string) (caddyhttp.RequestMatcherWithError, error) {
 		return &caddyhttp.MatchExpression{Expr: value}, nil
 	},
 }

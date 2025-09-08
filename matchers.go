@@ -2,6 +2,7 @@ package caddy_docker_upstreams
 
 import (
 	"net/url"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -23,13 +24,13 @@ var producers = map[string]func(string) (caddyhttp.RequestMatcher, error){
 		return &matcher, nil
 	},
 	LabelMatchHost: func(value string) (caddyhttp.RequestMatcher, error) {
-		return &caddyhttp.MatchHost{value}, nil
+		return caddyhttp.MatchHost(strings.Fields(value)), nil
 	},
 	LabelMatchMethod: func(value string) (caddyhttp.RequestMatcher, error) {
-		return &caddyhttp.MatchMethod{value}, nil
+		return caddyhttp.MatchMethod(strings.Fields(value)), nil
 	},
 	LabelMatchPath: func(value string) (caddyhttp.RequestMatcher, error) {
-		return &caddyhttp.MatchPath{value}, nil
+		return caddyhttp.MatchPath(strings.Fields(value)), nil
 	},
 	LabelMatchQuery: func(value string) (caddyhttp.RequestMatcher, error) {
 		query, err := url.ParseQuery(value)

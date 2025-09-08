@@ -68,7 +68,7 @@ vaultwarden:
   labels:
     com.caddyserver.http.enable: true
     com.caddyserver.http.upstream.port: 80
-    com.caddyserver.http.matchers.host: vaultwarden.example.com
+    com.caddyserver.http.matchers.host: "vaultwarden.example.com bitwarden.example.com"
   environment:
     DOMAIN: https://vaultwarden.example.com
 ```

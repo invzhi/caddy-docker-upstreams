@@ -25,8 +25,21 @@ const (
 	LabelUpstreamPort = "com.caddyserver.http.upstream.port"
 )
 
+const (
+	defaultDebounceInterval = 100 * time.Millisecond
+	defaultReconnectDelay   = 500 * time.Millisecond
+)
+
 func init() {
 	caddy.RegisterModule(Upstreams{})
+}
+
+// dockerClient is the subset of *client.Client used by this module.
+// Its purpose is to allow testing this module with mocks.
+type dockerClient interface {
+	ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	Events(ctx context.Context, options client.EventsListOptions) client.EventsResult
+	Close() error
 }
 
 type candidate struct {
@@ -45,16 +58,24 @@ var defaultFilters = client.Filters{}.
 	Add("health", string(container.Healthy), string(container.NoHealthcheck))
 
 // Upstreams provides upstreams from the docker host.
-type Upstreams struct{}
+type Upstreams struct {
+	debounceInterval time.Duration
+	reconnectDelay   time.Duration
+}
 
 func (Upstreams) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.reverse_proxy.upstreams.docker",
-		New: func() caddy.Module { return new(Upstreams) },
+		ID: "http.reverse_proxy.upstreams.docker",
+		New: func() caddy.Module {
+			return &Upstreams{
+				debounceInterval: defaultDebounceInterval,
+				reconnectDelay:   defaultReconnectDelay,
+			}
+		},
 	}
 }
 
-func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli *client.Client) error {
+func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) error {
 	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{Filters: defaultFilters})
 	if err != nil {
 		return fmt.Errorf("listing docker containers: %w", err)
@@ -135,10 +156,10 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli *client.Client) e
 	return nil
 }
 
-func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
+func (u *Upstreams) keepUpdated(ctx caddy.Context, cli dockerClient) {
 	defer cli.Close()
 
-	debounced := debounce.New(100 * time.Millisecond)
+	debounced := debounce.New(u.debounceInterval)
 
 	for {
 		messages := cli.Events(ctx, client.EventsListOptions{
@@ -168,7 +189,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(u.reconnectDelay):
 		}
 	}
 }

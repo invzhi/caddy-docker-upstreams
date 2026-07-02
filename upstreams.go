@@ -13,11 +13,9 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/client"
 	"go.uber.org/zap"
 )
 
@@ -41,12 +39,10 @@ var (
 	candidatesMu sync.RWMutex
 )
 
-var defaultFilters = filters.NewArgs(
-	filters.Arg("label", fmt.Sprintf("%s=true", LabelEnable)),
-	filters.Arg("status", "running"), // types.ContainerState.Status
-	filters.Arg("health", types.Healthy),
-	filters.Arg("health", types.NoHealthcheck),
-)
+var defaultFilters = client.Filters{}.
+	Add("label", fmt.Sprintf("%s=true", LabelEnable)).
+	Add("status", "running"). // container.State.Status
+	Add("health", string(container.Healthy), string(container.NoHealthcheck))
 
 // Upstreams provides upstreams from the docker host.
 type Upstreams struct{}
@@ -59,14 +55,14 @@ func (Upstreams) CaddyModule() caddy.ModuleInfo {
 }
 
 func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli *client.Client) error {
-	containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: defaultFilters})
+	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{Filters: defaultFilters})
 	if err != nil {
 		return fmt.Errorf("listing docker containers: %w", err)
 	}
 
-	updated := make([]candidate, 0, len(containers))
+	updated := make([]candidate, 0, len(containers.Items))
 
-	for _, c := range containers {
+	for _, c := range containers.Items {
 		// Build matchers.
 		matchers := buildMatchers(ctx, c.Labels)
 
@@ -91,7 +87,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli *client.Client) e
 		if !ok {
 			// Use the first network settings of container.
 			for _, settings := range c.NetworkSettings.Networks {
-				address := net.JoinHostPort(settings.IPAddress, port)
+				address := net.JoinHostPort(settings.IPAddress.String(), port)
 				updated = append(updated, candidate{
 					matchers: matchers,
 					upstream: &reverseproxy.Upstream{Dial: address},
@@ -125,7 +121,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli *client.Client) e
 			}
 		}
 
-		address := net.JoinHostPort(settings.IPAddress, port)
+		address := net.JoinHostPort(settings.IPAddress.String(), port)
 		updated = append(updated, candidate{
 			matchers: matchers,
 			upstream: &reverseproxy.Upstream{Dial: address},
@@ -145,21 +141,21 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli *client.Client) {
 	debounced := debounce.New(100 * time.Millisecond)
 
 	for {
-		messages, errs := cli.Events(ctx, events.ListOptions{
-			Filters: filters.NewArgs(filters.Arg("type", string(events.ContainerEventType))),
+		messages := cli.Events(ctx, client.EventsListOptions{
+			Filters: client.Filters{}.Add("type", string(events.ContainerEventType)),
 		})
 
 	selectLoop:
 		for {
 			select {
-			case <-messages:
+			case <-messages.Messages:
 				debounced(func() {
 					err := u.provisionCandidates(ctx, cli)
 					if err != nil {
 						ctx.Logger().Error("unable to provision the candidates", zap.Error(err))
 					}
 				})
-			case err := <-errs:
+			case err := <-messages.Err:
 				if errors.Is(err, context.Canceled) {
 					return
 				}
@@ -189,12 +185,12 @@ func (u *Upstreams) provision(ctx caddy.Context, cli *client.Client) error {
 }
 
 func (u *Upstreams) Provision(ctx caddy.Context) error {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return fmt.Errorf("provisioning docker client: %w", err)
 	}
 
-	ping, err := cli.Ping(ctx)
+	ping, err := cli.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true})
 	if err != nil {
 		return fmt.Errorf("ping docker server: %w", err)
 	}

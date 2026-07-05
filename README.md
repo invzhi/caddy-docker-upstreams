@@ -36,6 +36,38 @@ app3.example.com {
 }
 ```
 
+### Selecting containers by label
+
+By default every enabled container is a candidate, and the request matchers
+(host, path, …) decide which ones serve a request. When several containers are
+otherwise indistinguishable — for example replicas of two Compose services on
+the same address — you can narrow the candidates by their Docker labels:
+
+```
+localhost:8080 {
+    reverse_proxy {
+        dynamic docker {
+            label com.docker.compose.service first
+        }
+    }
+}
+```
+
+A container is selected only if it matches **every** `label` directive. Listing
+several values for one key matches any of them (OR); repeating a key unions its
+values:
+
+```
+dynamic docker {
+    label com.docker.compose.service first second
+    label com.docker.compose.project demo
+}
+```
+
+Because this selects on container metadata rather than the request, it works
+with any Docker label — the Compose service name
+(`com.docker.compose.service`) is just the common case.
+
 ## Docker Labels
 
 This module requires the Docker Labels to provide the necessary information.

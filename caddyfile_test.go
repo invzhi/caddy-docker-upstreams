@@ -9,13 +9,19 @@ import (
 
 func TestUnmarshalCaddyfile(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
+		name       string
+		input      string
+		wantErr    bool
+		wantLabels map[string][]string
 	}{
 		{
 			name:  "bare directive",
 			input: `docker`,
+		},
+		{
+			name: "empty block",
+			input: `docker {
+			}`,
 		},
 		{
 			name:    "unexpected argument",
@@ -26,6 +32,59 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			name: "unrecognized block option",
 			input: `docker {
 				foo
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "single label",
+			input: `docker {
+				label com.docker.compose.service first
+			}`,
+			wantLabels: map[string][]string{
+				"com.docker.compose.service": {"first"},
+			},
+		},
+		{
+			name: "label with multiple values",
+			input: `docker {
+				label com.docker.compose.service first second
+			}`,
+			wantLabels: map[string][]string{
+				"com.docker.compose.service": {"first", "second"},
+			},
+		},
+		{
+			name: "multiple label directives",
+			input: `docker {
+				label com.docker.compose.service first
+				label com.docker.compose.project demo
+			}`,
+			wantLabels: map[string][]string{
+				"com.docker.compose.service": {"first"},
+				"com.docker.compose.project": {"demo"},
+			},
+		},
+		{
+			name: "repeated label key unions values",
+			input: `docker {
+				label com.docker.compose.service first
+				label com.docker.compose.service second
+			}`,
+			wantLabels: map[string][]string{
+				"com.docker.compose.service": {"first", "second"},
+			},
+		},
+		{
+			name: "label without value",
+			input: `docker {
+				label com.docker.compose.service
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "label without arguments",
+			input: `docker {
+				label
 			}`,
 			wantErr: true,
 		},
@@ -42,6 +101,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
+				assert.Equal(t, tt.wantLabels, u.Labels)
 			}
 		})
 	}

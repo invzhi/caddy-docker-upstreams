@@ -79,6 +79,64 @@ func TestGetUpstreams(t *testing.T) {
 	})
 }
 
+func TestGetUpstreamsLabelSelector(t *testing.T) {
+	first := &reverseproxy.Upstream{Dial: "10.0.0.1:8080"}
+	second := &reverseproxy.Upstream{Dial: "10.0.0.2:8080"}
+	other := &reverseproxy.Upstream{Dial: "10.0.0.3:8080"}
+
+	candidatesMu.Lock()
+	prev := candidates
+	candidates = []candidate{
+		{labels: map[string]string{"com.docker.compose.service": "first"}, upstream: first},
+		{labels: map[string]string{"com.docker.compose.service": "second"}, upstream: second},
+		{labels: map[string]string{"com.docker.compose.service": "other"}, upstream: other},
+		{labels: nil, upstream: &reverseproxy.Upstream{Dial: "10.0.0.4:8080"}},
+	}
+	candidatesMu.Unlock()
+	t.Cleanup(func() {
+		candidatesMu.Lock()
+		candidates = prev
+		candidatesMu.Unlock()
+	})
+
+	req := prepareRequest(mustRequest(http.MethodGet, "http://example.com/"))
+
+	t.Run("empty selector matches all", func(t *testing.T) {
+		var u Upstreams
+		got, err := u.GetUpstreams(req)
+		require.NoError(t, err)
+		assert.Len(t, got, 4)
+	})
+
+	t.Run("selects a single service", func(t *testing.T) {
+		u := Upstreams{Labels: map[string][]string{
+			"com.docker.compose.service": {"first"},
+		}}
+		got, err := u.GetUpstreams(req)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []*reverseproxy.Upstream{first}, got)
+	})
+
+	t.Run("value list is ORed", func(t *testing.T) {
+		u := Upstreams{Labels: map[string][]string{
+			"com.docker.compose.service": {"first", "second"},
+		}}
+		got, err := u.GetUpstreams(req)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []*reverseproxy.Upstream{first, second}, got)
+	})
+
+	t.Run("keys are ANDed", func(t *testing.T) {
+		u := Upstreams{Labels: map[string][]string{
+			"com.docker.compose.service": {"first"},
+			"missing.label":              {"whatever"},
+		}}
+		got, err := u.GetUpstreams(req)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+}
+
 func mustRequest(method, target string) *http.Request {
 	req, err := http.NewRequest(method, target, nil)
 	if err != nil {

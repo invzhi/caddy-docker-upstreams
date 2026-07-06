@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -44,6 +45,7 @@ type dockerClient interface {
 
 type candidate struct {
 	matchers caddyhttp.MatcherSet
+	labels   map[string]string
 	upstream *reverseproxy.Upstream
 }
 
@@ -59,6 +61,19 @@ var defaultFilters = client.Filters{}.
 
 // Upstreams provides upstreams from the docker host.
 type Upstreams struct {
+	// Labels narrows the containers this source considers to those whose
+	// Docker labels match. A container is selected only if, for every key,
+	// its label value equals one of the listed values (keys are ANDed,
+	// values within a key are ORed). An empty selector matches every
+	// enabled container.
+	//
+	// This selects on container metadata rather than the request, so it can
+	// distinguish otherwise-identical upstreams — e.g. pin routing to a
+	// single Compose service via the label it already carries:
+	//
+	//	label com.docker.compose.service first
+	Labels map[string][]string `json:"labels,omitempty"`
+
 	debounceInterval time.Duration
 	reconnectDelay   time.Duration
 }
@@ -111,6 +126,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 				address := net.JoinHostPort(settings.IPAddress.String(), port)
 				updated = append(updated, candidate{
 					matchers: matchers,
+					labels:   c.Labels,
 					upstream: &reverseproxy.Upstream{Dial: address},
 				})
 				break
@@ -145,6 +161,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 		address := net.JoinHostPort(settings.IPAddress.String(), port)
 		updated = append(updated, candidate{
 			matchers: matchers,
+			labels:   c.Labels,
 			upstream: &reverseproxy.Upstream{Dial: address},
 		})
 	}
@@ -227,12 +244,27 @@ func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, err
 	defer candidatesMu.RUnlock()
 
 	for _, c := range candidates {
+		if !u.selects(c) {
+			continue
+		}
 		if c.matchers.Match(r) {
 			upstreams = append(upstreams, c.upstream)
 		}
 	}
 
 	return upstreams, nil
+}
+
+// selects reports whether the candidate's container satisfies u.Labels. Every
+// configured key must be present with a value among those listed for it.
+func (u *Upstreams) selects(c candidate) bool {
+	for key, values := range u.Labels {
+		got, ok := c.labels[key]
+		if !ok || !slices.Contains(values, got) {
+			return false
+		}
+	}
+	return true
 }
 
 // Interface guards

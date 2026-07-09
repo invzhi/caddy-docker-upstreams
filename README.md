@@ -68,6 +68,45 @@ Because this selects on container metadata rather than the request, it works
 with any Docker label — the Compose service name
 (`com.docker.compose.service`) is just the common case.
 
+### Setting the upstream port
+
+When every backend listens on the same port, set it once in the Caddyfile
+instead of repeating the `com.caddyserver.http.upstream.port` label on each
+container:
+
+```
+localhost:8080 {
+    reverse_proxy {
+        dynamic docker {
+            port 8080
+        }
+    }
+}
+```
+
+This is also useful if the container provides multiple endpoints (i.e. listens
+on more than one port):
+
+
+```
+localhost:8080 {
+    reverse_proxy /admin {
+        dynamic docker {
+            port 8081
+        }
+    }
+
+    reverse_proxy {
+        dynamic docker {
+            port 8080
+        }
+    }
+}
+```
+
+A `port` configured here takes precedence over the label and makes it optional.
+Without `port`, each container must still carry the label.
+
 ## Docker Labels
 
 This module requires the Docker Labels to provide the necessary information.
@@ -76,7 +115,7 @@ This module requires the Docker Labels to provide the necessary information.
 |--------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
 | `com.caddyserver.http.enable`        | required, should be `true`                                                                                                             |
 | `com.caddyserver.http.network`       | optional, specify the docker network which caddy connecting through (if it is empty, the first network of container will be specified) |
-| `com.caddyserver.http.upstream.port` | required, specify the port                                                                                                             |
+| `com.caddyserver.http.upstream.port` | required unless the Caddyfile `port` is set, specify the port                                                                          |
 
 As well as the labels corresponding to the matcher.
 

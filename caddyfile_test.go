@@ -13,6 +13,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		input      string
 		wantErr    bool
 		wantLabels map[string][]string
+		wantPort   string
 	}{
 		{
 			name:  "bare directive",
@@ -75,6 +76,38 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			},
 		},
 		{
+			name: "port",
+			input: `docker {
+				port 8080
+			}`,
+			wantPort: "8080",
+		},
+		{
+			name: "port with label",
+			input: `docker {
+				label com.docker.compose.service first
+				port 8080
+			}`,
+			wantLabels: map[string][]string{
+				"com.docker.compose.service": {"first"},
+			},
+			wantPort: "8080",
+		},
+		{
+			name: "port without value",
+			input: `docker {
+				port
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "port with multiple values",
+			input: `docker {
+				port 8080 9090
+			}`,
+			wantErr: true,
+		},
+		{
 			name: "label without value",
 			input: `docker {
 				label com.docker.compose.service
@@ -102,6 +135,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.wantLabels, u.Labels)
+				assert.Equal(t, tt.wantPort, u.Port)
 			}
 		})
 	}

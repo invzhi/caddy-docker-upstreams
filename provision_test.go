@@ -52,6 +52,7 @@ func dials(cs []candidate) []string {
 func TestProvisionCandidates(t *testing.T) {
 	tests := []struct {
 		name       string
+		port       string
 		containers []container.Summary
 		wantDials  []string
 	}{
@@ -134,6 +135,28 @@ func TestProvisionCandidates(t *testing.T) {
 			wantDials: []string{},
 		},
 		{
+			name: "configured port overrides the label",
+			port: "8080",
+			containers: []container.Summary{
+				summary("a",
+					map[string]string{LabelUpstreamPort: "9090"},
+					map[string]string{"bridge": "10.0.0.1"},
+				),
+			},
+			wantDials: []string{"10.0.0.1:8080"},
+		},
+		{
+			name: "configured port makes the label optional",
+			port: "8080",
+			containers: []container.Summary{
+				summary("a",
+					map[string]string{},
+					map[string]string{"bridge": "10.0.0.1"},
+				),
+			},
+			wantDials: []string{"10.0.0.1:8080"},
+		},
+		{
 			name: "valid and invalid containers are filtered",
 			containers: []container.Summary{
 				summary("ok",
@@ -159,6 +182,7 @@ func TestProvisionCandidates(t *testing.T) {
 				Return(client.ContainerListResult{Items: tt.containers}, nil)
 
 			var u Upstreams
+			u.Port = tt.port
 			err := u.provisionCandidates(ctx, cli)
 			require.NoError(t, err)
 

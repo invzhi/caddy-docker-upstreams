@@ -6,6 +6,7 @@ import "github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 //
 //	dynamic docker {
 //	    label <key> <value...>
+//	    port <port>
 //	}
 func (u *Upstreams) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
@@ -24,6 +25,14 @@ func (u *Upstreams) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				key, values := args[0], args[1:]
 				u.Labels[key] = append(u.Labels[key], values...)
+			case "port":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				u.Port = d.Val()
+				if d.NextArg() {
+					return d.ArgErr()
+				}
 			default:
 				return d.Errf("unrecognized docker option '%s'", d.Val())
 			}

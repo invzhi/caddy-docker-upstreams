@@ -74,6 +74,11 @@ type Upstreams struct {
 	//	label com.docker.compose.service first
 	Labels map[string][]string `json:"labels,omitempty"`
 
+	// Port overrides the upstream port for every container this source
+	// considers. When set, it takes precedence over the per-container
+	// com.caddyserver.http.upstream.port label and makes that label optional.
+	Port string `json:"port,omitempty"`
+
 	debounceInterval time.Duration
 	reconnectDelay   time.Duration
 }
@@ -102,13 +107,18 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 		// Build matchers.
 		matchers := buildMatchers(ctx, c.Labels)
 
-		// Build upstream.
-		port, ok := c.Labels[LabelUpstreamPort]
-		if !ok {
-			ctx.Logger().Error("unable to get port from container labels",
-				zap.String("container_id", c.ID),
-			)
-			continue
+		// Build upstream. A port configured in the Caddyfile takes precedence
+		// over the per-container label and makes that label optional.
+		port := u.Port
+		if port == "" {
+			var ok bool
+			port, ok = c.Labels[LabelUpstreamPort]
+			if !ok {
+				ctx.Logger().Error("unable to get port from container labels or configuration",
+					zap.String("container_id", c.ID),
+				)
+				continue
+			}
 		}
 
 		// Choose network to connect.

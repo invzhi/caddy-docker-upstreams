@@ -1,0 +1,81 @@
+{
+	# Keep the smoke test plain HTTP and self-contained.
+	admin off
+	auto_https off
+	# DEBUG surfaces the plugin's upstream-selection tracing.
+	log {
+		level DEBUG
+	}
+}
+
+# Each site below selects a Compose service by label and supplies its upstream
+# port with the `port` directive. Correct routing would be:
+#
+#   :9001 -> alpha         "alpha"
+#   :9002 -> beta          "beta"
+#   :9003 -> multi :8080   "multi api"
+#   :9004 -> multi :9090   "multi metrics"
+#   :9005 -> web (:80)     "web"          (label-supplied port, scaled x2)
+
+# alpha and beta run the same image on different ports.
+http://localhost:9001 {
+	reverse_proxy {
+		dynamic docker {
+			port 5001
+			label com.docker.compose.service alpha
+		}
+	}
+}
+
+http://localhost:9002 {
+	reverse_proxy {
+		dynamic docker {
+			port 5002
+			label com.docker.compose.service beta
+		}
+	}
+}
+
+# The multi container exposes two ports; these two sites select the same
+# container but expect different ports.
+http://localhost:9003 {
+	reverse_proxy /other {
+		dynamic docker {
+			label com.docker.compose.service multi
+			port 9090
+		}
+	}
+
+	reverse_proxy {
+		dynamic docker {
+			port 8080
+			label com.docker.compose.service multi
+		}
+	}
+}
+
+http://localhost:9004 {
+	reverse_proxy /other {
+		dynamic docker {
+			label com.docker.compose.service multi
+			port 8080
+		}
+	}
+
+	reverse_proxy {
+		dynamic docker {
+			port 9090
+			label com.docker.compose.service multi
+		}
+	}
+}
+
+# web is scaled to two replicas and carries the port label, so no `port`
+# directive is needed here.
+http://localhost:9005 {
+	reverse_proxy {
+		dynamic docker {
+			label com.docker.compose.service web
+		}
+	}
+}

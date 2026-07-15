@@ -1,0 +1,38 @@
+name: caddy-docker-upstreams-smoke
+
+# A deliberately varied project to exercise upstream port selection:
+#   - alpha / beta: the same image run with different commands and ports
+#   - multi:        one container exposing two ports (API + metrics)
+#   - web:          a scaled service (2 replicas) using the port label
+#
+# alpha, beta and multi carry no com.caddyserver.http.upstream.port label; the
+# Caddyfile supplies their ports via `port` directives, with a different port
+# per `dynamic docker` block.
+services:
+  alpha:
+    image: hashicorp/http-echo
+    command: ["-listen=:5001", "-text=alpha"]
+    labels:
+      com.caddyserver.http.enable: "true"
+
+  beta:
+    image: hashicorp/http-echo
+    command: ["-listen=:5002", "-text=beta"]
+    labels:
+      com.caddyserver.http.enable: "true"
+
+  multi:
+    image: nginx:alpine
+    volumes:
+      - ./multi.conf:/etc/nginx/conf.d/default.conf:ro
+    labels:
+      com.caddyserver.http.enable: "true"
+
+  web:
+    image: hashicorp/http-echo
+    command: ["-listen=:80", "-text=web"]
+    deploy:
+      replicas: 2
+    labels:
+      com.caddyserver.http.enable: "true"
+      com.caddyserver.http.upstream.port: "80"

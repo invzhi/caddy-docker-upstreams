@@ -46,7 +46,8 @@ type dockerClient interface {
 type candidate struct {
 	matchers caddyhttp.MatcherSet
 	labels   map[string]string
-	upstream *reverseproxy.Upstream
+	address  string // container IP address, without a port
+	port     string // port from the upstream.port label; empty when the label is absent
 }
 
 var (
@@ -107,19 +108,10 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 		// Build matchers.
 		matchers := buildMatchers(ctx, c.Labels)
 
-		// Build upstream. A port configured in the Caddyfile takes precedence
-		// over the per-container label and makes that label optional.
-		port := u.Port
-		if port == "" {
-			var ok bool
-			port, ok = c.Labels[LabelUpstreamPort]
-			if !ok {
-				ctx.Logger().Error("unable to get port from container labels or configuration",
-					zap.String("container_id", c.ID),
-				)
-				continue
-			}
-		}
+		// Candidates are shared by every dynamic docker block, so provisioning
+		// must not fold in per-block configuration such as the port directive.
+		// Record the container IP and its optional port label here; the
+		// effective port is resolved per request in GetUpstreams.
 
 		// Choose network to connect.
 		if len(c.NetworkSettings.Networks) == 0 {
@@ -129,50 +121,46 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 			continue
 		}
 
+		var address string
 		network, ok := c.Labels[LabelNetwork]
 		if !ok {
 			// Use the first network settings of container.
 			for _, settings := range c.NetworkSettings.Networks {
-				address := net.JoinHostPort(settings.IPAddress.String(), port)
-				updated = append(updated, candidate{
-					matchers: matchers,
-					labels:   c.Labels,
-					upstream: &reverseproxy.Upstream{Dial: address},
-				})
+				address = settings.IPAddress.String()
 				break
 			}
-			continue
+		} else {
+			settings, ok := c.NetworkSettings.Networks[network]
+			if !ok {
+				// Add project prefix. See also https://github.com/compose-spec/compose-go/blob/main/loader/normalize.go.
+				const projectLabel = "com.docker.compose.project"
+				project, ok := c.Labels[projectLabel]
+				if !ok {
+					ctx.Logger().Error("unable to get network settings from container",
+						zap.String("container_id", c.ID),
+						zap.String("network", network),
+					)
+					continue
+				}
+
+				network = fmt.Sprintf("%s_%s", project, network)
+				settings, ok = c.NetworkSettings.Networks[network]
+				if !ok {
+					ctx.Logger().Error("unable to get network settings from container",
+						zap.String("container_id", c.ID),
+						zap.String("network", network),
+					)
+					continue
+				}
+			}
+			address = settings.IPAddress.String()
 		}
 
-		settings, ok := c.NetworkSettings.Networks[network]
-		if !ok {
-			// Add project prefix. See also https://github.com/compose-spec/compose-go/blob/main/loader/normalize.go.
-			const projectLabel = "com.docker.compose.project"
-			project, ok := c.Labels[projectLabel]
-			if !ok {
-				ctx.Logger().Error("unable to get network settings from container",
-					zap.String("container_id", c.ID),
-					zap.String("network", network),
-				)
-				continue
-			}
-
-			network = fmt.Sprintf("%s_%s", project, network)
-			settings, ok = c.NetworkSettings.Networks[network]
-			if !ok {
-				ctx.Logger().Error("unable to get network settings from container",
-					zap.String("container_id", c.ID),
-					zap.String("network", network),
-				)
-				continue
-			}
-		}
-
-		address := net.JoinHostPort(settings.IPAddress.String(), port)
 		updated = append(updated, candidate{
 			matchers: matchers,
 			labels:   c.Labels,
-			upstream: &reverseproxy.Upstream{Dial: address},
+			address:  address,
+			port:     c.Labels[LabelUpstreamPort],
 		})
 	}
 
@@ -257,9 +245,22 @@ func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, err
 		if !u.selects(c) {
 			continue
 		}
-		if c.matchers.Match(r) {
-			upstreams = append(upstreams, c.upstream)
+		if !c.matchers.Match(r) {
+			continue
 		}
+
+		// Resolve the port for this block: the port directive takes precedence
+		// over the per-container label. This is done here rather than at
+		// provision time because candidates are shared across all blocks.
+		port := u.Port
+		if port == "" {
+			port = c.port
+		}
+		if port == "" {
+			continue
+		}
+
+		upstreams = append(upstreams, &reverseproxy.Upstream{Dial: net.JoinHostPort(c.address, port)})
 	}
 
 	return upstreams, nil

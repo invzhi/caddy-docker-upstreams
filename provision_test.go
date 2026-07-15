@@ -2,6 +2,7 @@ package caddy_docker_upstreams
 
 import (
 	"errors"
+	"net"
 	"net/netip"
 	"testing"
 
@@ -41,10 +42,16 @@ func summary(id string, labels map[string]string, networks map[string]string) co
 	}
 }
 
+// dials renders each candidate as the address it would be dialed at when its
+// port comes from the label; a candidate without a port label shows just the
+// IP, since its effective port is supplied per block in GetUpstreams.
 func dials(cs []candidate) []string {
 	out := make([]string, len(cs))
 	for i, c := range cs {
-		out[i] = c.upstream.Dial
+		out[i] = c.address
+		if c.port != "" {
+			out[i] = net.JoinHostPort(c.address, c.port)
+		}
 	}
 	return out
 }
@@ -52,7 +59,6 @@ func dials(cs []candidate) []string {
 func TestProvisionCandidates(t *testing.T) {
 	tests := []struct {
 		name       string
-		port       string
 		containers []container.Summary
 		wantDials  []string
 	}{
@@ -91,14 +97,16 @@ func TestProvisionCandidates(t *testing.T) {
 			wantDials: []string{"172.21.0.9:9000"},
 		},
 		{
-			name: "container without port label is skipped",
+			name: "container without port label is kept without a port",
 			containers: []container.Summary{
 				summary("a",
 					map[string]string{},
 					map[string]string{"bridge": "10.0.0.1"},
 				),
 			},
-			wantDials: []string{},
+			// The port is resolved per block in GetUpstreams, so the candidate
+			// is kept here even though it carries no port label.
+			wantDials: []string{"10.0.0.1"},
 		},
 		{
 			name: "container without networks is skipped",
@@ -135,31 +143,9 @@ func TestProvisionCandidates(t *testing.T) {
 			wantDials: []string{},
 		},
 		{
-			name: "configured port overrides the label",
-			port: "8080",
+			name: "containers with and without a port label are both kept",
 			containers: []container.Summary{
-				summary("a",
-					map[string]string{LabelUpstreamPort: "9090"},
-					map[string]string{"bridge": "10.0.0.1"},
-				),
-			},
-			wantDials: []string{"10.0.0.1:8080"},
-		},
-		{
-			name: "configured port makes the label optional",
-			port: "8080",
-			containers: []container.Summary{
-				summary("a",
-					map[string]string{},
-					map[string]string{"bridge": "10.0.0.1"},
-				),
-			},
-			wantDials: []string{"10.0.0.1:8080"},
-		},
-		{
-			name: "valid and invalid containers are filtered",
-			containers: []container.Summary{
-				summary("ok",
+				summary("labelled",
 					map[string]string{LabelUpstreamPort: "8080"},
 					map[string]string{"bridge": "10.0.0.1"},
 				),
@@ -168,7 +154,7 @@ func TestProvisionCandidates(t *testing.T) {
 					map[string]string{"bridge": "10.0.0.2"},
 				),
 			},
-			wantDials: []string{"10.0.0.1:8080"},
+			wantDials: []string{"10.0.0.1:8080", "10.0.0.2"},
 		},
 	}
 
@@ -182,7 +168,6 @@ func TestProvisionCandidates(t *testing.T) {
 				Return(client.ContainerListResult{Items: tt.containers}, nil)
 
 			var u Upstreams
-			u.Port = tt.port
 			err := u.provisionCandidates(ctx, cli)
 			require.NoError(t, err)
 

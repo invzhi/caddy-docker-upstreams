@@ -42,6 +42,20 @@ func summary(id string, labels map[string]string, networks map[string]string) co
 	}
 }
 
+// hostNetworkSummary builds a summary for a container using host networking,
+// which Docker reports with a "host" endpoint carrying no IP address.
+func hostNetworkSummary(id string, labels map[string]string) container.Summary {
+	c := container.Summary{
+		ID:     id,
+		Labels: labels,
+		NetworkSettings: &container.NetworkSettingsSummary{
+			Networks: map[string]*network.EndpointSettings{"host": {}},
+		},
+	}
+	c.HostConfig.NetworkMode = "host"
+	return c
+}
+
 // dials renders each candidate as the address it would be dialed at when its
 // port comes from the label; a candidate without a port label shows just the
 // IP, since its effective port is supplied per block in GetUpstreams.
@@ -95,6 +109,13 @@ func TestProvisionCandidates(t *testing.T) {
 				),
 			},
 			wantDials: []string{"172.21.0.9:9000"},
+		},
+		{
+			name: "host network mode dials the bare port",
+			containers: []container.Summary{
+				hostNetworkSummary("a", map[string]string{LabelUpstreamPort: "8080"}),
+			},
+			wantDials: []string{":8080"},
 		},
 		{
 			name: "container without port label is kept without a port",

@@ -4,6 +4,7 @@ name: caddy-docker-upstreams-smoke
 #   - alpha / beta: the same image run with different commands and ports
 #   - multi:        one container exposing two ports (API + metrics)
 #   - web:          a scaled service (2 replicas) using the port label
+#   - host:         a container sharing the host network namespace
 #
 # alpha, beta and multi carry no com.caddyserver.http.upstream.port label; the
 # Caddyfile supplies their ports via `port` directives, with a different port
@@ -36,3 +37,12 @@ services:
     labels:
       com.caddyserver.http.enable: "true"
       com.caddyserver.http.upstream.port: "80"
+
+  # Shares the host network namespace, so Docker reports no container IP for
+  # it. Its upstream is the bare port on the host.
+  host:
+    image: hashicorp/http-echo
+    command: ["-listen=:5006", "-text=host"]
+    network_mode: host
+    labels:
+      com.caddyserver.http.enable: "true"

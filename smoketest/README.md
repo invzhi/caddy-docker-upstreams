@@ -11,12 +11,15 @@ across several `dynamic docker` blocks at once:
 | `http://localhost:9003/` | `multi`      | `multi api`     | `port 8080` directive      |
 | `http://localhost:9004/` | `multi`      | `multi metrics` | `port 9090` directive      |
 | `http://localhost:9005/` | `web` (×2)   | `web`           | `com.caddyserver.http.upstream.port` label |
+| `http://localhost:9006/` | `host`       | `host`          | `port 5006` directive      |
 
 - `alpha` / `beta` run the **same image** with different commands and ports.
 - `multi` is **one container exposing two ports** (an "API" and a "metrics" port);
   two sites select it but expect different ports.
 - `web` is **scaled to two replicas** and carries the port label, so its site
   needs no `port` directive.
+- `host` uses **`network_mode: host`**, for which Docker reports no container
+  IP; its upstream is the bare port in the host network namespace.
 
 This mix is what surfaced a port-selection bug: `alpha`, `beta` and `multi`
 each need a different port supplied by their block's `port` directive, so it is
@@ -64,6 +67,7 @@ To drive it by hand instead, everything runs from this directory.
    curl http://localhost:9004/        # multi metrics
    curl http://localhost:9004/other   # multi api
    curl http://localhost:9005/        # web
+   curl http://localhost:9006/        # host
    ```
 
 5. Tear down:
@@ -77,5 +81,6 @@ To drive it by hand instead, everything runs from this directory.
 - Caddy runs on the host and dials container IPs directly, which works out of
   the box on Linux. On Docker Desktop (macOS/Windows) the bridge network is not
   routable from the host — run Caddy as a container on the same Compose network
-  instead.
+  instead. The `host` service likewise needs `network_mode: host`, which is
+  Linux-only.
 - The `./caddy` binary is a build artifact and is git-ignored.

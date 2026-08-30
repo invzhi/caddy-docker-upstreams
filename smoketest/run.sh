@@ -63,6 +63,7 @@ check http://localhost:9003/other "multi metrics"
 check http://localhost:9004/      "multi metrics"
 check http://localhost:9004/other "multi api"
 check http://localhost:9005/      "web"
+check http://localhost:9006/      "host"
 
 if [[ "$failures" -ne 0 ]]; then
 	err "$failures route(s) failed"

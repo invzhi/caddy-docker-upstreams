@@ -113,6 +113,17 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 		// Record the container IP and its optional port label here; the
 		// effective port is resolved per request in GetUpstreams.
 
+		// Containers sharing the host's network namespace have no address of
+		// their own; dialing the bare port reaches that namespace.
+		if c.HostConfig.NetworkMode == "host" {
+			updated = append(updated, candidate{
+				matchers: matchers,
+				labels:   c.Labels,
+				port:     c.Labels[LabelUpstreamPort],
+			})
+			continue
+		}
+
 		// Choose network to connect.
 		if len(c.NetworkSettings.Networks) == 0 {
 			ctx.Logger().Error("unable to get ip address from container networks",

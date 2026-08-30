@@ -16,6 +16,7 @@
 #   :9003 -> multi :8080   "multi api"
 #   :9004 -> multi :9090   "multi metrics"
 #   :9005 -> web (:80)     "web"          (label-supplied port, scaled x2)
+#   :9006 -> host :5006    "host"         (host network namespace)
 
 # alpha and beta run the same image on different ports.
 http://localhost:9001 {
@@ -76,6 +77,17 @@ http://localhost:9005 {
 	reverse_proxy {
 		dynamic docker {
 			label com.docker.compose.service web
+		}
+	}
+}
+
+# host runs in the host network namespace and so has no container IP; the
+# upstream is the bare port, reachable on the host itself.
+http://localhost:9006 {
+	reverse_proxy {
+		dynamic docker {
+			port 5006
+			label com.docker.compose.service host
 		}
 	}
 }

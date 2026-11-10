@@ -107,6 +107,44 @@ localhost:8080 {
 A `port` configured here takes precedence over the label and makes it optional.
 Without `port`, each container must still carry the label.
 
+### Turning off Health Checks
+
+It is possible that the service you are using can not be configured with a health check
+at the container level, either due to the function not being exposed in a third party control
+pannel, or due to the container/service having no binaries that can be used for a health check.
+While this is fine in Docker which has the `health: none` filter, Podman contains no such filter.
+And as such, containers with no health check will simply be ignored.
+
+In these instances, you can turn off the health check by using the `health_check` flag.
+
+```
+nohealthcheck.example.com {
+    reverse_proxy {
+        dynamic docker {
+            health_check false
+        }
+    }
+}
+```
+
+To avoid disabling health checks for services that still support it, use a label.
+This example uses the multi upstream module.
+
+```
+somehealthcheck.example.com {
+    reverse_proxy {
+        dynamic multi {
+            docker {
+                health_check false
+                label com.podman.health.unsupported yes
+            }
+            docker {
+            }
+        }
+    }
+}
+```
+
 ## Docker Labels
 
 This module requires the Docker Labels to provide the necessary information.

@@ -29,6 +29,7 @@ const (
 const (
 	defaultDebounceInterval = 100 * time.Millisecond
 	defaultReconnectDelay   = 500 * time.Millisecond
+	defaultHealthCheck	= true
 )
 
 func init() {
@@ -58,7 +59,8 @@ var (
 var defaultFilters = client.Filters{}.
 	Add("label", fmt.Sprintf("%s=true", LabelEnable)).
 	Add("status", "running"). // container.State.Status
-	Add("health", string(container.Healthy), string(container.NoHealthcheck))
+
+var healthCheckFilter = ("health", string(container.Healthy), string(container.NoHealthcheck))
 
 // Upstreams provides upstreams from the docker host.
 type Upstreams struct {
@@ -80,6 +82,22 @@ type Upstreams struct {
 	// com.caddyserver.http.upstream.port label and makes that label optional.
 	Port string `json:"port,omitempty"`
 
+	// HealthCheck toggles whenever we should send the "health" filter.
+	// By default, the option is true.
+	//
+	// When utilizing Podman, `"health": "none"` or `"health": {"none": true}`
+	// is not a valid filter, meaning that any containers that do not have
+	// healthchecks are ignored. Additionally, doing `"unhealthy": false`
+	// does not exclude unhealthy containers. Lastly, it is either
+	// impossible to setup health checks on containers that are not made with
+	// health checks in mind (such as distoless containers where every single binary
+	// is stripped out or where a service like Pelican is used in conjunction with
+	// this plugin).
+	// As such, the only choice is to not send the healthcheck filter. 
+	// This option gives the user that choice.
+	// If HealthCheck is not used, monitoring via another agent should be preferable.
+	healthCheck bool `json:"health_check,omitempty"`
+
 	debounceInterval time.Duration
 	reconnectDelay   time.Duration
 }
@@ -91,13 +109,18 @@ func (Upstreams) CaddyModule() caddy.ModuleInfo {
 			return &Upstreams{
 				debounceInterval: defaultDebounceInterval,
 				reconnectDelay:   defaultReconnectDelay,
+				healthCheck:      defaultHealthCheck,
 			}
 		},
 	}
 }
 
 func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) error {
-	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{Filters: defaultFilters})
+	var filtersSelection = defaultFilters
+	if ctx.healthCheck == true {
+		filtersSelection.Add(healthCheckFilter)
+	}
+	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{Filters: filtersSelection})
 	if err != nil {
 		return fmt.Errorf("listing docker containers: %w", err)
 	}

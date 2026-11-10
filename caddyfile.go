@@ -7,6 +7,7 @@ import "github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 //	dynamic docker {
 //	    label <key> <value...>
 //	    port <port>
+//	    healthcheck <true/false>
 //	}
 func (u *Upstreams) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
@@ -30,6 +31,14 @@ func (u *Upstreams) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				u.Port = d.Val()
+				if d.NextArg() {
+					return d.ArgErr()
+				}
+			case "health_check":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				u.healthCheck = d.Val()
 				if d.NextArg() {
 					return d.ArgErr()
 				}

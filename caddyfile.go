@@ -42,7 +42,11 @@ func (u *Upstreams) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				u.HealthCheck = strconv.ParseBool(d.Val())
+				strb, err := strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value %q: %v", d.Val(), err)
+				}
+				u.HealthCheck = strb
 				if d.NextArg() {
 					return d.ArgErr()
 				}

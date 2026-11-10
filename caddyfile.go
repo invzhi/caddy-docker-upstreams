@@ -38,7 +38,7 @@ func (u *Upstreams) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				u.HealthCheck = d.Val()
+				u.HealthCheck = strconv.ParseBool(d.Val())
 				if d.NextArg() {
 					return d.ArgErr()
 				}

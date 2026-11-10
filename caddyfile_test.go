@@ -121,6 +121,34 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			}`,
 			wantErr: true,
 		},
+		{
+			name: "health check enabled",
+			input: `docker {
+				health_check true
+			}`,
+			wantHealthCheck: "true",
+		},
+		{
+			name: "health check disabled",
+			input: `docker {
+				health_check false
+			}`,
+			wantHealthCheck: "false",
+		},
+		{
+			name: "health check without value",
+			input: `docker {
+				health_check
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "health check with multiple values",
+			input: `docker {
+				health_check true false
+			}`,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -136,6 +164,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.wantLabels, u.Labels)
 				assert.Equal(t, tt.wantPort, u.Port)
+				assert.Equal(t, tt.wantHealthCheck, u.healthCheck)
 			}
 		})
 	}

@@ -164,7 +164,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.wantLabels, u.Labels)
 				assert.Equal(t, tt.wantPort, u.Port)
-				assert.Equal(t, tt.wantHealthCheck, u.healthCheck)
+				assert.Equal(t, tt.wantHealthCheck, u.HealthCheck)
 			}
 		})
 	}

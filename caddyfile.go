@@ -1,6 +1,10 @@
 package caddy_docker_upstreams
 
-import "github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+import (
+	"strconv"
+
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+)
 
 // UnmarshalCaddyfile deserializes Caddyfile tokens into u.
 //

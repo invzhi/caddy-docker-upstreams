@@ -39,6 +39,7 @@ func init() {
 // Its purpose is to allow testing this module with mocks.
 type dockerClient interface {
 	ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	ContainerInspect(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
 	Events(ctx context.Context, options client.EventsListOptions) client.EventsResult
 	Close() error
 }
@@ -57,8 +58,7 @@ var (
 
 var defaultFilters = client.Filters{}.
 	Add("label", fmt.Sprintf("%s=true", LabelEnable)).
-	Add("status", "running"). // container.State.Status
-	Add("health", string(container.Healthy), string(container.NoHealthcheck))
+	Add("status", "running") // container.State.Status
 
 // Upstreams provides upstreams from the docker host.
 type Upstreams struct {
@@ -105,6 +105,13 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 	updated := make([]candidate, 0, len(containers.Items))
 
 	for _, c := range containers.Items {
+		// We did not send a "health" filter due to inconsistent implementations
+		// between different backends (Docker, Podman, etc.). Instead, we will
+		// handle the health check ourselves.
+		if !u.isHealthEligible(ctx, cli, c.ID) {
+			continue
+		}
+
 		// Build matchers.
 		matchers := buildMatchers(ctx, c.Labels)
 
@@ -180,6 +187,30 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 	candidatesMu.Unlock()
 
 	return nil
+}
+
+// isHealthEligible returns true when a container has no effective health check
+// or its configured health check is currently healthy. An inspection failure,
+// an absent health state for a configured check, or any non-healthy state makes
+// the container ineligible until a later refresh succeeds.
+func (u *Upstreams) isHealthEligible(ctx caddy.Context, cli dockerClient, id string) bool {
+	inspection, err := cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if err != nil {
+		ctx.Logger().Warn("unable to inspect container health; excluding container",
+			zap.String("container_id", id), zap.Error(err),
+		)
+		return false
+	}
+
+	config := inspection.Container.Config
+	if config == nil || config.Healthcheck == nil || len(config.Healthcheck.Test) == 0 || config.Healthcheck.Test[0] == "NONE" {
+		// A missing Test key is treated as NONE. Some container backends
+		// may not return such a key if it does not exist.
+		return true
+	}
+
+	state := inspection.Container.State
+	return state != nil && state.Health != nil && state.Health.Status == container.Healthy
 }
 
 func (u *Upstreams) keepUpdated(ctx caddy.Context, cli dockerClient) {

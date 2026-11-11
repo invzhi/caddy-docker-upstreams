@@ -465,10 +465,84 @@ func TestKeepUpdatedReturnsOnContextCancelDuringBackoff(t *testing.T) {
 	cli.AssertCalled(t, "Close")
 }
 
+
+
 func TestCaddyModuleDefaults(t *testing.T) {
 	mod := Upstreams{}.CaddyModule().New()
 	u, ok := mod.(*Upstreams)
 	require.True(t, ok)
 	assert.Equal(t, defaultDebounceInterval, u.debounceInterval)
 	assert.Equal(t, defaultReconnectDelay, u.reconnectDelay)
+}
+
+// ContainerInspect defaults to an absent health check so existing tests using
+// mockDockerClient retain their previous behavior. Health-specific tests can
+// override it with healthInspectClient.
+func (m *mockDockerClient) ContainerInspect(context.Context, string, client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+	return client.ContainerInspectResult{}, nil
+}
+
+type healthInspectClient struct {
+	*mockDockerClient
+	inspect func(context.Context, string, client.ContainerInspectOptions) (client.ContainerInspectResult, error)
+}
+
+func (m *healthInspectClient) ContainerInspect(ctx context.Context, id string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+	return m.inspect(ctx, id, options)
+}
+
+func TestProvisionCandidatesHealthEligibility(t *testing.T) {
+	withCandidates(t)
+	ctx := newTestContext(t)
+
+	ids := []string{"healthy", "unhealthy", "no-check", "disabled", "inspect-error"}
+	containers := make([]container.Summary, 0, len(ids))
+	for i, id := range ids {
+		containers = append(containers, container.Summary{
+			ID: id,
+			Labels: map[string]string{LabelUpstreamPort: "8080"},
+			NetworkSettings: &container.NetworkSettingsSummary{
+				Networks: map[string]*network.EndpointSettings{
+					"bridge": {IPAddress: netip.MustParseAddr("10.0.0." + string(rune('1'+i)))},
+				},
+			},
+		})
+	}
+
+	base := &mockDockerClient{}
+	base.On("ContainerList", mock.Anything, mock.Anything).
+		Return(client.ContainerListResult{Items: containers}, nil)
+
+	cli := &healthInspectClient{
+		mockDockerClient: base,
+		inspect: func(_ context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			if id == "inspect-error" {
+				return client.ContainerInspectResult{}, errors.New("inspect failed")
+			}
+			if id == "no-check" {
+				return client.ContainerInspectResult{}, nil
+			}
+			test := []string{"CMD-SHELL", "true"}
+			if id == "disabled" {
+				test = []string{"NONE"}
+			}
+			status := "unhealthy"
+			if id == "healthy" {
+				status = container.Healthy
+			}
+			return client.ContainerInspectResult{Container: container.InspectResponse{
+				Config: &container.Config{Healthcheck: &container.HealthConfig{Test: test}},
+				State:  &container.State{Health: &container.Health{Status: status}},
+			}}, nil
+		},
+	}
+
+	var u Upstreams
+	require.NoError(t, u.provisionCandidates(ctx, cli))
+
+	candidatesMu.RLock()
+	got := dials(candidates)
+	candidatesMu.RUnlock()
+	assert.ElementsMatch(t, []string{"10.0.0.1:8080", "10.0.0.3:8080", "10.0.0.4:8080"}, got)
+	base.AssertExpectations(t)
 }

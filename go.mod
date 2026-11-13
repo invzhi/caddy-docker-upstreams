@@ -1,4 +1,4 @@
-module github.com/invzhi/caddy-docker-upstreams
+module github.com/Hacksawfred3232/caddy-docker-upstreams
 
 go 1.25.8
 

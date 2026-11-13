@@ -177,8 +177,8 @@ func TestGetUpstreamsPortIsolatedPerInstance(t *testing.T) {
 	// Two containers telling themselves apart by a service label; neither
 	// carries a port label, so each site's port comes from its `port`
 	// directive — the same image on two different ports.
-	cli := &mockDockerClient{}
-	cli.On("ContainerList", mock.Anything, mock.Anything).Return(
+	docker := &mockDockerClient{}
+	docker.On("ContainerList", mock.Anything, mock.Anything).Return(
 		client.ContainerListResult{Items: []container.Summary{
 			summary("alpha",
 				map[string]string{"com.docker.compose.service": "alpha"},
@@ -194,8 +194,8 @@ func TestGetUpstreamsPortIsolatedPerInstance(t *testing.T) {
 	beta := &Upstreams{Port: "5002", Labels: map[string][]string{"com.docker.compose.service": {"beta"}}}
 
 	// Both blocks provision into the one shared candidate list; beta runs last.
-	require.NoError(t, provisionCandidates(ctx, zap.NewNop(), cli))
-	require.NoError(t, provisionCandidates(ctx, zap.NewNop(), cli))
+	require.NoError(t, newTestDocker(ctx, docker).provisionCandidates())
+	require.NoError(t, newTestDocker(ctx, docker).provisionCandidates())
 
 	req := newRequest(t, http.MethodGet, "http://localhost/")
 
@@ -265,6 +265,10 @@ func mustRequest(method, target string) *http.Request {
 		panic(err)
 	}
 	return req
+}
+
+func newTestDocker(ctx context.Context, docker docker) *Docker {
+	return &Docker{ctx: ctx, logger: zap.NewNop(), docker: docker}
 }
 
 // mockDockerClient is a testify mock implementing dockerClient, shared by the
@@ -359,7 +363,7 @@ func TestKeepUpdatedReprovisionsOnEvent(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		keepUpdated(ctx, zap.NewNop(), docker)
+		newTestDocker(ctx, docker).keepUpdated()
 		close(done)
 	}()
 
@@ -386,7 +390,7 @@ func TestKeepUpdatedStopsOnCanceled(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		keepUpdated(ctx, zap.NewNop(), docker)
+		newTestDocker(ctx, docker).keepUpdated()
 		close(done)
 	}()
 
@@ -411,7 +415,7 @@ func TestKeepUpdatedReconnectsAfterError(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		keepUpdated(ctx, zap.NewNop(), docker)
+		newTestDocker(ctx, docker).keepUpdated()
 		close(done)
 	}()
 
@@ -439,7 +443,7 @@ func TestKeepUpdatedReturnsOnContextCancelDuringBackoff(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		keepUpdated(ctx, zap.NewNop(), docker)
+		newTestDocker(ctx, docker).keepUpdated()
 		close(done)
 	}()
 

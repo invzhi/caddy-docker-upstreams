@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 )
 
 // withCandidates saves and restores the package-level candidates so each test
@@ -185,11 +184,11 @@ func TestProvisionCandidates(t *testing.T) {
 			withCandidates(t)
 			ctx := newTestContext(t)
 
-			cli := &mockDockerClient{}
-			cli.On("ContainerList", mock.Anything, mock.Anything).
+			docker := &mockDockerClient{}
+			docker.On("ContainerList", mock.Anything, mock.Anything).
 				Return(client.ContainerListResult{Items: tt.containers}, nil)
 
-			err := provisionCandidates(ctx, zap.NewNop(), cli)
+			err := newTestDocker(ctx, docker).provisionCandidates()
 			require.NoError(t, err)
 
 			candidatesMu.RLock()
@@ -197,7 +196,7 @@ func TestProvisionCandidates(t *testing.T) {
 			candidatesMu.RUnlock()
 
 			assert.ElementsMatch(t, tt.wantDials, got)
-			cli.AssertExpectations(t)
+			docker.AssertExpectations(t)
 		})
 	}
 }
@@ -206,8 +205,8 @@ func TestProvisionCandidatesBuildsMatchers(t *testing.T) {
 	withCandidates(t)
 	ctx := newTestContext(t)
 
-	cli := &mockDockerClient{}
-	cli.On("ContainerList", mock.Anything, mock.Anything).
+	docker := &mockDockerClient{}
+	docker.On("ContainerList", mock.Anything, mock.Anything).
 		Return(client.ContainerListResult{Items: []container.Summary{
 			summary("a",
 				map[string]string{
@@ -218,7 +217,7 @@ func TestProvisionCandidatesBuildsMatchers(t *testing.T) {
 			),
 		}}, nil)
 
-	require.NoError(t, provisionCandidates(ctx, zap.NewNop(), cli))
+	require.NoError(t, newTestDocker(ctx, docker).provisionCandidates())
 
 	candidatesMu.RLock()
 	defer candidatesMu.RUnlock()
@@ -240,12 +239,12 @@ func TestProvisionCandidatesListError(t *testing.T) {
 	ctx := newTestContext(t)
 
 	sentinel := errors.New("boom")
-	cli := &mockDockerClient{}
-	cli.On("ContainerList", mock.Anything, mock.Anything).
+	docker := &mockDockerClient{}
+	docker.On("ContainerList", mock.Anything, mock.Anything).
 		Return(client.ContainerListResult{}, sentinel)
 
-	err := provisionCandidates(ctx, zap.NewNop(), cli)
+	err := newTestDocker(ctx, docker).provisionCandidates()
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sentinel)
-	cli.AssertExpectations(t)
+	docker.AssertExpectations(t)
 }

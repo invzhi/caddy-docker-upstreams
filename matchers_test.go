@@ -43,6 +43,34 @@ func TestProducers(t *testing.T) {
 		wantErr bool
 	}{
 		{
+			name:  "protocol matches",
+			label: LabelMatchProtocol,
+			value: "http",
+			req:   newRequest(t, http.MethodGet, "http://example.com/"),
+			want:  true,
+		},
+		{
+			name:  "protocol does not match",
+			label: LabelMatchProtocol,
+			value: "https",
+			req:   newRequest(t, http.MethodGet, "http://example.com/"),
+			want:  false,
+		},
+		{
+			name:  "expression matches",
+			label: LabelMatchExpression,
+			value: `method('GET')`,
+			req:   newRequest(t, http.MethodGet, "http://example.com/"),
+			want:  true,
+		},
+		{
+			name:  "expression does not match",
+			label: LabelMatchExpression,
+			value: `method('GET')`,
+			req:   newRequest(t, http.MethodPost, "http://example.com/"),
+			want:  false,
+		},
+		{
 			name:  "host matches",
 			label: LabelMatchHost,
 			value: "example.com",
@@ -125,6 +153,10 @@ func TestProducers(t *testing.T) {
 			}
 			require.NoError(t, err)
 
+			if prov, ok := matcher.(caddy.Provisioner); ok {
+				require.NoError(t, prov.Provision(caddy.Context{Context: newTestContext(t)}))
+			}
+
 			got, err := matcher.MatchWithError(tt.req)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
@@ -154,6 +186,39 @@ func TestBuildMatchers(t *testing.T) {
 	ok, err = matchers.MatchWithError(newRequest(t, http.MethodPost, "http://example.com/api/users"))
 	require.NoError(t, err)
 	assert.False(t, ok, "expected request with wrong method not to match")
+}
+
+func TestBuildMatchersInvalidLabel(t *testing.T) {
+	tests := []struct {
+		name    string
+		label   string
+		value   string
+		message string
+	}{
+		{
+			name:    "invalid query",
+			label:   LabelMatchQuery,
+			value:   "%zz",
+			message: "unable to load matcher",
+		},
+		{
+			name:    "invalid expression",
+			label:   LabelMatchExpression,
+			value:   "(",
+			message: "unable to provision matcher",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matchers := buildMatchers(newTestContext(t), zap.NewNop(), map[string]string{
+				tt.label:         tt.value,
+				LabelMatchMethod: "GET",
+			})
+			require.Len(t, matchers, 1, "invalid matcher must be skipped")
+			require.IsType(t, new(caddyhttp.MatchMethod), matchers[0])
+		})
+	}
 }
 
 func TestBuildMatchersEmpty(t *testing.T) {

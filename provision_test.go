@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 // withCandidates saves and restores the package-level candidates so each test
@@ -188,8 +189,7 @@ func TestProvisionCandidates(t *testing.T) {
 			cli.On("ContainerList", mock.Anything, mock.Anything).
 				Return(client.ContainerListResult{Items: tt.containers}, nil)
 
-			var u Upstreams
-			err := u.provisionCandidates(ctx, cli)
+			err := provisionCandidates(ctx, zap.NewNop(), cli)
 			require.NoError(t, err)
 
 			candidatesMu.RLock()
@@ -218,8 +218,7 @@ func TestProvisionCandidatesBuildsMatchers(t *testing.T) {
 			),
 		}}, nil)
 
-	var u Upstreams
-	require.NoError(t, u.provisionCandidates(ctx, cli))
+	require.NoError(t, provisionCandidates(ctx, zap.NewNop(), cli))
 
 	candidatesMu.RLock()
 	defer candidatesMu.RUnlock()
@@ -245,8 +244,7 @@ func TestProvisionCandidatesListError(t *testing.T) {
 	cli.On("ContainerList", mock.Anything, mock.Anything).
 		Return(client.ContainerListResult{}, sentinel)
 
-	var u Upstreams
-	err := u.provisionCandidates(ctx, cli)
+	err := provisionCandidates(ctx, zap.NewNop(), cli)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sentinel)
 	cli.AssertExpectations(t)

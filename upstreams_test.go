@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestCaddyModule(t *testing.T) {
@@ -190,8 +191,8 @@ func TestGetUpstreamsPortIsolatedPerInstance(t *testing.T) {
 	beta := &Upstreams{Port: "5002", Labels: map[string][]string{"com.docker.compose.service": {"beta"}}}
 
 	// Both blocks provision into the one shared candidate list; beta runs last.
-	require.NoError(t, alpha.provisionCandidates(ctx, cli))
-	require.NoError(t, beta.provisionCandidates(ctx, cli))
+	require.NoError(t, provisionCandidates(ctx, zap.NewNop(), cli))
+	require.NoError(t, provisionCandidates(ctx, zap.NewNop(), cli))
 
 	req := newRequest(t, http.MethodGet, "http://localhost/")
 
@@ -349,15 +350,13 @@ func TestKeepUpdatedReprovisionsOnEvent(t *testing.T) {
 	ctx, _ := newCancelableContext(t)
 
 	stream := newEventStream()
-	cli := &mockDockerClient{}
-	cli.On("Events", mock.Anything, mock.Anything).Return(stream.result())
-	cli.On("ContainerList", mock.Anything, mock.Anything).Return(oneContainerResult(), nil)
-	cli.On("Close").Return(nil)
+	docker := &mockDockerClient{}
+	docker.On("Events", mock.Anything, mock.Anything).Return(stream.result())
+	docker.On("ContainerList", mock.Anything, mock.Anything).Return(oneContainerResult(), nil)
 
-	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Millisecond}
 	done := make(chan struct{})
 	go func() {
-		u.keepUpdated(ctx, cli)
+		keepUpdated(ctx, zap.NewNop(), docker)
 		close(done)
 	}()
 
@@ -369,8 +368,9 @@ func TestKeepUpdatedReprovisionsOnEvent(t *testing.T) {
 	stream.errs <- context.Canceled
 	awaitReturn(t, done)
 
-	cli.AssertCalled(t, "Close")
-	cli.AssertExpectations(t)
+	// The shared client pool owns the client and closes it on final release.
+	docker.AssertNotCalled(t, "Close")
+	docker.AssertExpectations(t)
 }
 
 func TestKeepUpdatedStopsOnCanceled(t *testing.T) {
@@ -378,24 +378,21 @@ func TestKeepUpdatedStopsOnCanceled(t *testing.T) {
 	ctx, _ := newCancelableContext(t)
 
 	stream := newEventStream()
-	cli := &mockDockerClient{}
-	cli.On("Events", mock.Anything, mock.Anything).Return(stream.result())
-	cli.On("Close").Return(nil)
+	docker := &mockDockerClient{}
+	docker.On("Events", mock.Anything, mock.Anything).Return(stream.result())
 
-	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Millisecond}
 	done := make(chan struct{})
 	go func() {
-		u.keepUpdated(ctx, cli)
+		keepUpdated(ctx, zap.NewNop(), docker)
 		close(done)
 	}()
 
 	stream.errs <- context.Canceled
 	awaitReturn(t, done)
 
-	cli.AssertCalled(t, "Close")
 	// No event was delivered, so the container list is never fetched.
-	cli.AssertNotCalled(t, "ContainerList", mock.Anything, mock.Anything)
-	cli.AssertExpectations(t)
+	docker.AssertNotCalled(t, "ContainerList", mock.Anything, mock.Anything)
+	docker.AssertExpectations(t)
 }
 
 func TestKeepUpdatedReconnectsAfterError(t *testing.T) {
@@ -404,16 +401,14 @@ func TestKeepUpdatedReconnectsAfterError(t *testing.T) {
 
 	first := newEventStream()
 	second := newEventStream()
-	cli := &mockDockerClient{}
+	docker := &mockDockerClient{}
 	// First connection, then a fresh connection after the reconnect delay.
-	cli.On("Events", mock.Anything, mock.Anything).Return(first.result()).Once()
-	cli.On("Events", mock.Anything, mock.Anything).Return(second.result()).Once()
-	cli.On("Close").Return(nil)
+	docker.On("Events", mock.Anything, mock.Anything).Return(first.result()).Once()
+	docker.On("Events", mock.Anything, mock.Anything).Return(second.result()).Once()
 
-	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Millisecond}
 	done := make(chan struct{})
 	go func() {
-		u.keepUpdated(ctx, cli)
+		keepUpdated(ctx, zap.NewNop(), docker)
 		close(done)
 	}()
 
@@ -421,15 +416,14 @@ func TestKeepUpdatedReconnectsAfterError(t *testing.T) {
 	// reconnect: Events is invoked a second time.
 	first.errs <- errors.New("boom")
 	require.Eventually(t, func() bool {
-		return cli.eventsCalls.Load() == 2
+		return docker.eventsCalls.Load() == 2
 	}, 2*time.Second, time.Millisecond)
 
 	// Stop via the second connection.
 	second.errs <- context.Canceled
 	awaitReturn(t, done)
 
-	cli.AssertNumberOfCalls(t, "Close", 1)
-	cli.AssertExpectations(t)
+	docker.AssertExpectations(t)
 }
 
 func TestKeepUpdatedReturnsOnContextCancelDuringBackoff(t *testing.T) {
@@ -437,16 +431,12 @@ func TestKeepUpdatedReturnsOnContextCancelDuringBackoff(t *testing.T) {
 	ctx, cancel := newCancelableContext(t)
 
 	stream := newEventStream()
-	cli := &mockDockerClient{}
-	cli.On("Events", mock.Anything, mock.Anything).Return(stream.result())
-	cli.On("Close").Return(nil)
+	docker := &mockDockerClient{}
+	docker.On("Events", mock.Anything, mock.Anything).Return(stream.result())
 
-	// A long reconnect delay ensures the context-cancel branch of the outer
-	// select wins the race rather than a reconnect.
-	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Second}
 	done := make(chan struct{})
 	go func() {
-		u.keepUpdated(ctx, cli)
+		keepUpdated(ctx, zap.NewNop(), docker)
 		close(done)
 	}()
 
@@ -454,21 +444,13 @@ func TestKeepUpdatedReturnsOnContextCancelDuringBackoff(t *testing.T) {
 	// waits out the reconnect delay.
 	stream.errs <- errors.New("boom")
 	require.Eventually(t, func() bool {
-		return cli.eventsCalls.Load() == 1
+		return docker.eventsCalls.Load() == 1
 	}, 2*time.Second, time.Millisecond)
 	cancel()
 
 	awaitReturn(t, done)
 
 	// It must have returned via ctx.Done(), without reconnecting.
-	cli.AssertNumberOfCalls(t, "Events", 1)
-	cli.AssertCalled(t, "Close")
-}
-
-func TestCaddyModuleDefaults(t *testing.T) {
-	mod := Upstreams{}.CaddyModule().New()
-	u, ok := mod.(*Upstreams)
-	require.True(t, ok)
-	assert.Equal(t, defaultDebounceInterval, u.debounceInterval)
-	assert.Equal(t, defaultReconnectDelay, u.reconnectDelay)
+	docker.AssertNumberOfCalls(t, "Events", 1)
+	docker.AssertExpectations(t)
 }

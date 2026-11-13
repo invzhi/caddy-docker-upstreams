@@ -9,13 +9,12 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
-func newTestContext(t *testing.T) caddy.Context {
+func newTestContext(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
-	t.Cleanup(cancel)
-	return ctx
+	return context.Background()
 }
 
 // prepareRequest attaches the replacer and vars that caddy's matchers expect to
@@ -144,7 +143,7 @@ func TestBuildMatchers(t *testing.T) {
 		LabelEnable: "true",
 	}
 
-	matchers := buildMatchers(ctx, labels)
+	matchers := buildMatchers(ctx, zap.NewNop(), labels)
 	require.Len(t, matchers, 3)
 
 	ok, err := matchers.MatchWithError(newRequest(t, http.MethodGet, "http://example.com/api/users"))
@@ -160,7 +159,7 @@ func TestBuildMatchers(t *testing.T) {
 func TestBuildMatchersEmpty(t *testing.T) {
 	ctx := newTestContext(t)
 
-	matchers := buildMatchers(ctx, map[string]string{"unrelated": "label"})
+	matchers := buildMatchers(ctx, zap.NewNop(), map[string]string{"unrelated": "label"})
 	require.Empty(t, matchers)
 
 	// An empty matcher set matches every request.

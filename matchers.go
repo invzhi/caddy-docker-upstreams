@@ -1,6 +1,7 @@
 package caddy_docker_upstreams
 
 import (
+	"context"
 	"net/url"
 	"strings"
 
@@ -48,7 +49,7 @@ var producers = map[string]func(string) (caddyhttp.RequestMatcherWithError, erro
 	},
 }
 
-func buildMatchers(ctx caddy.Context, labels map[string]string) caddyhttp.MatcherSet {
+func buildMatchers(ctx context.Context, logger *zap.Logger, labels map[string]string) caddyhttp.MatcherSet {
 	var matchers caddyhttp.MatcherSet
 
 	for key, producer := range producers {
@@ -59,7 +60,7 @@ func buildMatchers(ctx caddy.Context, labels map[string]string) caddyhttp.Matche
 
 		matcher, err := producer(value)
 		if err != nil {
-			ctx.Logger().Error("unable to load matcher",
+			logger.Error("unable to load matcher",
 				zap.String("key", key),
 				zap.String("value", value),
 				zap.Error(err),
@@ -68,9 +69,9 @@ func buildMatchers(ctx caddy.Context, labels map[string]string) caddyhttp.Matche
 		}
 
 		if prov, ok := matcher.(caddy.Provisioner); ok {
-			err = prov.Provision(ctx)
+			err = prov.Provision(caddy.Context{Context: ctx})
 			if err != nil {
-				ctx.Logger().Error("unable to provision matcher",
+				logger.Error("unable to provision matcher",
 					zap.String("key", key),
 					zap.String("value", value),
 					zap.Error(err),

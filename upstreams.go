@@ -27,8 +27,8 @@ const (
 )
 
 const (
-	defaultDebounceInterval = 100 * time.Millisecond
-	defaultReconnectDelay   = 500 * time.Millisecond
+	defaultDebounceDuration  = 100 * time.Millisecond
+	defaultReconnectDuraiton = 500 * time.Millisecond
 )
 
 func init() {
@@ -79,25 +79,17 @@ type Upstreams struct {
 	// considers. When set, it takes precedence over the per-container
 	// com.caddyserver.http.upstream.port label and makes that label optional.
 	Port string `json:"port,omitempty"`
-
-	debounceInterval time.Duration
-	reconnectDelay   time.Duration
 }
 
 func (Upstreams) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID: "http.reverse_proxy.upstreams.docker",
-		New: func() caddy.Module {
-			return &Upstreams{
-				debounceInterval: defaultDebounceInterval,
-				reconnectDelay:   defaultReconnectDelay,
-			}
-		},
+		ID:  "http.reverse_proxy.upstreams.docker",
+		New: func() caddy.Module { return new(Upstreams) },
 	}
 }
 
-func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) error {
-	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{Filters: defaultFilters})
+func provisionCandidates(ctx context.Context, logger *zap.Logger, docker dockerClient) error {
+	containers, err := docker.ContainerList(ctx, client.ContainerListOptions{Filters: defaultFilters})
 	if err != nil {
 		return fmt.Errorf("listing docker containers: %w", err)
 	}
@@ -106,7 +98,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 
 	for _, c := range containers.Items {
 		// Build matchers.
-		matchers := buildMatchers(ctx, c.Labels)
+		matchers := buildMatchers(ctx, logger, c.Labels)
 
 		// Candidates are shared by every dynamic docker block, so provisioning
 		// must not fold in per-block configuration such as the port directive.
@@ -126,7 +118,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 
 		// Choose network to connect.
 		if len(c.NetworkSettings.Networks) == 0 {
-			ctx.Logger().Error("unable to get ip address from container networks",
+			logger.Error("unable to get ip address from container networks",
 				zap.String("container_id", c.ID),
 			)
 			continue
@@ -147,7 +139,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 				const projectLabel = "com.docker.compose.project"
 				project, ok := c.Labels[projectLabel]
 				if !ok {
-					ctx.Logger().Error("unable to get network settings from container",
+					logger.Error("unable to get network settings from container",
 						zap.String("container_id", c.ID),
 						zap.String("network", network),
 					)
@@ -157,7 +149,7 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 				network = fmt.Sprintf("%s_%s", project, network)
 				settings, ok = c.NetworkSettings.Networks[network]
 				if !ok {
-					ctx.Logger().Error("unable to get network settings from container",
+					logger.Error("unable to get network settings from container",
 						zap.String("container_id", c.ID),
 						zap.String("network", network),
 					)
@@ -182,24 +174,24 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 	return nil
 }
 
-func (u *Upstreams) keepUpdated(ctx caddy.Context, cli dockerClient) {
-	defer cli.Close()
-
-	debounced := debounce.New(u.debounceInterval)
+func keepUpdated(ctx context.Context, logger *zap.Logger, docker dockerClient) {
+	debounced := debounce.New(defaultDebounceDuration)
 
 	for {
-		messages := cli.Events(ctx, client.EventsListOptions{
+		messages := docker.Events(ctx, client.EventsListOptions{
 			Filters: client.Filters{}.Add("type", string(events.ContainerEventType)),
 		})
 
 	selectLoop:
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-messages.Messages:
 				debounced(func() {
-					err := u.provisionCandidates(ctx, cli)
+					err := provisionCandidates(ctx, logger, docker)
 					if err != nil {
-						ctx.Logger().Error("unable to provision the candidates", zap.Error(err))
+						logger.Error("unable to provision the candidates", zap.Error(err))
 					}
 				})
 			case err := <-messages.Err:
@@ -207,7 +199,7 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli dockerClient) {
 					return
 				}
 
-				ctx.Logger().Warn("unable to monitor container events; will retry", zap.Error(err))
+				logger.Warn("unable to monitor container events; will retry", zap.Error(err))
 				break selectLoop
 			}
 		}
@@ -215,35 +207,69 @@ func (u *Upstreams) keepUpdated(ctx caddy.Context, cli dockerClient) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(u.reconnectDelay):
+		case <-time.After(defaultReconnectDuraiton):
 		}
 	}
 }
 
-func (u *Upstreams) provision(ctx caddy.Context, cli *client.Client) error {
-	err := u.provisionCandidates(ctx, cli)
-	if err != nil {
-		return err
-	}
-
-	go u.keepUpdated(ctx, cli)
-
-	return nil
+type clientDestructor struct {
+	docker *client.Client
+	cancel context.CancelFunc
 }
 
+func (c clientDestructor) Destruct() error {
+	c.cancel()
+	return c.docker.Close()
+}
+
+const key = "docker"
+
+var clients = caddy.NewUsagePool()
+
 func (u *Upstreams) Provision(ctx caddy.Context) error {
-	cli, err := client.New(client.FromEnv)
-	if err != nil {
-		return fmt.Errorf("provisioning docker client: %w", err)
-	}
+	_, _, err := clients.LoadOrNew(key, func() (caddy.Destructor, error) {
+		docker, err := client.New(client.FromEnv)
+		if err != nil {
+			return nil, fmt.Errorf("provisioning docker client: %w", err)
+		}
 
-	ping, err := cli.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true})
-	if err != nil {
-		return fmt.Errorf("ping docker server: %w", err)
-	}
-	ctx.Logger().Info("connected docker server", zap.String("api_version", ping.APIVersion))
+		ping, err := docker.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true})
+		if err != nil {
+			return nil, fmt.Errorf("ping docker server: %w", err)
+		}
 
-	return u.provision(ctx, cli)
+		logger := ctx.Logger()
+		logger.Info("connected docker server", zap.String("api_version", ping.APIVersion))
+
+		err = provisionCandidates(ctx, logger, docker)
+		if err != nil {
+			return nil, err
+		}
+
+		// Reset the context so configuration reloads don't cancel the shared watcher.
+		ctx, cancel := context.WithCancel(context.Background())
+		go keepUpdated(ctx, logger, docker)
+
+		return clientDestructor{docker: docker, cancel: cancel}, nil
+	})
+	return err
+}
+
+func (u *Upstreams) Cleanup() error {
+	_, err := clients.Delete(key)
+	return err
+}
+
+// selects reports whether the candidate's container satisfies u.Labels. Every
+// configured key must be present with a value among those listed for it.
+func (u *Upstreams) selects(c candidate) bool {
+	for key, values := range u.Labels {
+		value, ok := c.labels[key]
+		if !ok || !slices.Contains(values, value) {
+			return false
+		}
+	}
+	return true
 }
 
 func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {
@@ -277,20 +303,9 @@ func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, err
 	return upstreams, nil
 }
 
-// selects reports whether the candidate's container satisfies u.Labels. Every
-// configured key must be present with a value among those listed for it.
-func (u *Upstreams) selects(c candidate) bool {
-	for key, values := range u.Labels {
-		got, ok := c.labels[key]
-		if !ok || !slices.Contains(values, got) {
-			return false
-		}
-	}
-	return true
-}
-
 // Interface guards
 var (
 	_ caddy.Provisioner           = (*Upstreams)(nil)
+	_ caddy.CleanerUpper          = (*Upstreams)(nil)
 	_ reverseproxy.UpstreamSource = (*Upstreams)(nil)
 )

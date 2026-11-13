@@ -45,23 +45,13 @@ func TestGetUpstreams(t *testing.T) {
 	host := caddyhttp.MatchHost{"example.com"}
 	apiPath := caddyhttp.MatchPath{"/api/*"}
 
-	// Populate the package-level candidates. Restore afterwards so tests stay
-	// independent.
-	candidatesMu.Lock()
-	prev := candidates
-	candidates = []candidate{
+	var u Upstreams
+	withCandidates(t, &u)
+	u.candidates = []candidate{
 		{matchers: caddyhttp.MatcherSet{&host, &apiPath}, address: apiAddr, port: port},
 		{matchers: caddyhttp.MatcherSet{&host}, address: webAddr, port: port},
 		{matchers: caddyhttp.MatcherSet{}, address: catchAllAddr, port: port},
 	}
-	candidatesMu.Unlock()
-	t.Cleanup(func() {
-		candidatesMu.Lock()
-		candidates = prev
-		candidatesMu.Unlock()
-	})
-
-	var u Upstreams
 
 	t.Run("matches host and path", func(t *testing.T) {
 		req := prepareRequest(mustRequest(http.MethodGet, "http://example.com/api/users"))
@@ -101,25 +91,17 @@ func TestGetUpstreamsLabelSelector(t *testing.T) {
 		secondDial = net.JoinHostPort(secondAddr, port)
 	)
 
-	candidatesMu.Lock()
-	prev := candidates
-	candidates = []candidate{
+	candidates := []candidate{
 		{labels: map[string]string{"com.docker.compose.service": "first"}, address: firstAddr, port: port},
 		{labels: map[string]string{"com.docker.compose.service": "second"}, address: secondAddr, port: port},
 		{labels: map[string]string{"com.docker.compose.service": "other"}, address: otherAddr, port: port},
 		{labels: nil, address: noLabelAddr, port: port},
 	}
-	candidatesMu.Unlock()
-	t.Cleanup(func() {
-		candidatesMu.Lock()
-		candidates = prev
-		candidatesMu.Unlock()
-	})
 
 	req := prepareRequest(mustRequest(http.MethodGet, "http://example.com/"))
 
 	t.Run("empty selector matches all", func(t *testing.T) {
-		var u Upstreams
+		u := Upstreams{candidates: candidates}
 		got, err := u.GetUpstreams(req)
 		require.NoError(t, err)
 		assert.Len(t, got, 4)
@@ -128,7 +110,7 @@ func TestGetUpstreamsLabelSelector(t *testing.T) {
 	t.Run("selects a single service", func(t *testing.T) {
 		u := Upstreams{Labels: map[string][]string{
 			"com.docker.compose.service": {"first"},
-		}}
+		}, candidates: candidates}
 		got, err := u.GetUpstreams(req)
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []string{firstDial}, upstreamDials(got))
@@ -137,7 +119,7 @@ func TestGetUpstreamsLabelSelector(t *testing.T) {
 	t.Run("value list is ORed", func(t *testing.T) {
 		u := Upstreams{Labels: map[string][]string{
 			"com.docker.compose.service": {"first", "second"},
-		}}
+		}, candidates: candidates}
 		got, err := u.GetUpstreams(req)
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []string{firstDial, secondDial}, upstreamDials(got))
@@ -147,7 +129,7 @@ func TestGetUpstreamsLabelSelector(t *testing.T) {
 		u := Upstreams{Labels: map[string][]string{
 			"com.docker.compose.service": {"first"},
 			"missing.label":              {"whatever"},
-		}}
+		}, candidates: candidates}
 		got, err := u.GetUpstreams(req)
 		require.NoError(t, err)
 		assert.Empty(t, got)
@@ -162,12 +144,9 @@ func upstreamDials(ups []*reverseproxy.Upstream) []string {
 	return out
 }
 
-// TestGetUpstreamsPortIsolatedPerInstance reproduces the bug where two
-// `dynamic docker` blocks configured with different `port` directives clobber
-// each other through the shared, package-level candidate list. Each block must
-// dial its own configured port regardless of which block provisioned last.
+// TestGetUpstreamsPortIsolatedPerInstance verifies that blocks configured with
+// different ports retain independent candidate lists and dial their own port.
 func TestGetUpstreamsPortIsolatedPerInstance(t *testing.T) {
-	withCandidates(t)
 	ctx := newTestContext(t)
 
 	// Two containers telling themselves apart by a service label; neither
@@ -188,8 +167,10 @@ func TestGetUpstreamsPortIsolatedPerInstance(t *testing.T) {
 
 	alpha := &Upstreams{Port: "5001", Labels: map[string][]string{"com.docker.compose.service": {"alpha"}}}
 	beta := &Upstreams{Port: "5002", Labels: map[string][]string{"com.docker.compose.service": {"beta"}}}
+	withCandidates(t, alpha)
+	withCandidates(t, beta)
 
-	// Both blocks provision into the one shared candidate list; beta runs last.
+	// Provision each block independently; each stores its own candidates.
 	require.NoError(t, alpha.provisionCandidates(ctx, cli))
 	require.NoError(t, beta.provisionCandidates(ctx, cli))
 
@@ -197,8 +178,7 @@ func TestGetUpstreamsPortIsolatedPerInstance(t *testing.T) {
 
 	gotAlpha, err := alpha.GetUpstreams(req)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"10.0.0.1:5001"}, upstreamDials(gotAlpha),
-		"alpha must dial its own port, not the port another block provisioned last")
+	assert.Equal(t, []string{"10.0.0.1:5001"}, upstreamDials(gotAlpha))
 
 	gotBeta, err := beta.GetUpstreams(req)
 	require.NoError(t, err)
@@ -242,12 +222,10 @@ func TestGetUpstreamsPortResolution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			withCandidates(t)
-			candidatesMu.Lock()
-			candidates = []candidate{tt.candidate}
-			candidatesMu.Unlock()
+			u := &Upstreams{Port: tt.port}
+			withCandidates(t, u)
+			u.candidates = []candidate{tt.candidate}
 
-			u := Upstreams{Port: tt.port}
 			got, err := u.GetUpstreams(newRequest(t, http.MethodGet, "http://example.com/"))
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantDials, upstreamDials(got))
@@ -327,10 +305,10 @@ func oneContainerResult() client.ContainerListResult {
 	}}}
 }
 
-func candidateCount() int {
-	candidatesMu.RLock()
-	defer candidatesMu.RUnlock()
-	return len(candidates)
+func candidateCount(u *Upstreams) int {
+	u.candidatesMu.RLock()
+	defer u.candidatesMu.RUnlock()
+	return len(u.candidates)
 }
 
 // awaitReturn fails the test if keepUpdated has not returned (done closed)
@@ -345,7 +323,8 @@ func awaitReturn(t *testing.T, done <-chan struct{}) {
 }
 
 func TestKeepUpdatedReprovisionsOnEvent(t *testing.T) {
-	withCandidates(t)
+	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Millisecond}
+	withCandidates(t, u)
 	ctx, _ := newCancelableContext(t)
 
 	stream := newEventStream()
@@ -354,7 +333,6 @@ func TestKeepUpdatedReprovisionsOnEvent(t *testing.T) {
 	cli.On("ContainerList", mock.Anything, mock.Anything).Return(oneContainerResult(), nil)
 	cli.On("Close").Return(nil)
 
-	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Millisecond}
 	done := make(chan struct{})
 	go func() {
 		u.keepUpdated(ctx, cli)
@@ -363,7 +341,7 @@ func TestKeepUpdatedReprovisionsOnEvent(t *testing.T) {
 
 	// A container event must trigger a re-provision.
 	stream.messages <- events.Message{}
-	require.Eventually(t, func() bool { return candidateCount() == 1 }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return candidateCount(u) == 1 }, 2*time.Second, time.Millisecond)
 
 	// A canceled error stops the loop.
 	stream.errs <- context.Canceled
@@ -374,7 +352,8 @@ func TestKeepUpdatedReprovisionsOnEvent(t *testing.T) {
 }
 
 func TestKeepUpdatedStopsOnCanceled(t *testing.T) {
-	withCandidates(t)
+	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Millisecond}
+	withCandidates(t, u)
 	ctx, _ := newCancelableContext(t)
 
 	stream := newEventStream()
@@ -382,7 +361,6 @@ func TestKeepUpdatedStopsOnCanceled(t *testing.T) {
 	cli.On("Events", mock.Anything, mock.Anything).Return(stream.result())
 	cli.On("Close").Return(nil)
 
-	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Millisecond}
 	done := make(chan struct{})
 	go func() {
 		u.keepUpdated(ctx, cli)
@@ -399,7 +377,8 @@ func TestKeepUpdatedStopsOnCanceled(t *testing.T) {
 }
 
 func TestKeepUpdatedReconnectsAfterError(t *testing.T) {
-	withCandidates(t)
+	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Millisecond}
+	withCandidates(t, u)
 	ctx, _ := newCancelableContext(t)
 
 	first := newEventStream()
@@ -410,7 +389,6 @@ func TestKeepUpdatedReconnectsAfterError(t *testing.T) {
 	cli.On("Events", mock.Anything, mock.Anything).Return(second.result()).Once()
 	cli.On("Close").Return(nil)
 
-	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Millisecond}
 	done := make(chan struct{})
 	go func() {
 		u.keepUpdated(ctx, cli)
@@ -433,7 +411,8 @@ func TestKeepUpdatedReconnectsAfterError(t *testing.T) {
 }
 
 func TestKeepUpdatedReturnsOnContextCancelDuringBackoff(t *testing.T) {
-	withCandidates(t)
+	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Second}
+	withCandidates(t, u)
 	ctx, cancel := newCancelableContext(t)
 
 	stream := newEventStream()
@@ -441,9 +420,6 @@ func TestKeepUpdatedReturnsOnContextCancelDuringBackoff(t *testing.T) {
 	cli.On("Events", mock.Anything, mock.Anything).Return(stream.result())
 	cli.On("Close").Return(nil)
 
-	// A long reconnect delay ensures the context-cancel branch of the outer
-	// select wins the race rather than a reconnect.
-	u := &Upstreams{debounceInterval: time.Millisecond, reconnectDelay: time.Second}
 	done := make(chan struct{})
 	go func() {
 		u.keepUpdated(ctx, cli)
@@ -464,8 +440,6 @@ func TestKeepUpdatedReturnsOnContextCancelDuringBackoff(t *testing.T) {
 	cli.AssertNumberOfCalls(t, "Events", 1)
 	cli.AssertCalled(t, "Close")
 }
-
-
 
 func TestCaddyModuleDefaults(t *testing.T) {
 	mod := Upstreams{}.CaddyModule().New()
@@ -492,14 +466,15 @@ func (m *healthInspectClient) ContainerInspect(ctx context.Context, id string, o
 }
 
 func TestProvisionCandidatesHealthEligibility(t *testing.T) {
-	withCandidates(t)
+	u := &Upstreams{}
+	withCandidates(t, u)
 	ctx := newTestContext(t)
 
 	ids := []string{"healthy", "unhealthy", "no-check", "disabled", "inspect-error"}
 	containers := make([]container.Summary, 0, len(ids))
 	for i, id := range ids {
 		containers = append(containers, container.Summary{
-			ID: id,
+			ID:     id,
 			Labels: map[string]string{LabelUpstreamPort: "8080"},
 			NetworkSettings: &container.NetworkSettingsSummary{
 				Networks: map[string]*network.EndpointSettings{
@@ -537,12 +512,11 @@ func TestProvisionCandidatesHealthEligibility(t *testing.T) {
 		},
 	}
 
-	var u Upstreams
 	require.NoError(t, u.provisionCandidates(ctx, cli))
 
-	candidatesMu.RLock()
-	got := dials(candidates)
-	candidatesMu.RUnlock()
+	u.candidatesMu.RLock()
+	got := dials(u.candidates)
+	u.candidatesMu.RUnlock()
 	assert.ElementsMatch(t, []string{"10.0.0.1:8080", "10.0.0.3:8080", "10.0.0.4:8080"}, got)
 	base.AssertExpectations(t)
 }

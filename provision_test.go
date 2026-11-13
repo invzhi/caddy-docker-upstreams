@@ -14,18 +14,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// withCandidates saves and restores the package-level candidates so each test
-// starts from a known state and does not leak into others.
-func withCandidates(t *testing.T) {
+// withCandidates saves and restores one Upstreams instance's candidates so each
+// test starts from a known state and does not leak into others.
+func withCandidates(t *testing.T, u *Upstreams) {
 	t.Helper()
-	candidatesMu.Lock()
-	prev := candidates
-	candidates = nil
-	candidatesMu.Unlock()
+	u.candidatesMu.Lock()
+	prev := u.candidates
+	u.candidates = nil
+	u.candidatesMu.Unlock()
 	t.Cleanup(func() {
-		candidatesMu.Lock()
-		candidates = prev
-		candidatesMu.Unlock()
+		u.candidatesMu.Lock()
+		u.candidates = prev
+		u.candidatesMu.Unlock()
 	})
 }
 
@@ -181,20 +181,20 @@ func TestProvisionCandidates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			withCandidates(t)
+			u := &Upstreams{}
+			withCandidates(t, u)
 			ctx := newTestContext(t)
 
 			cli := &mockDockerClient{}
 			cli.On("ContainerList", mock.Anything, mock.Anything).
 				Return(client.ContainerListResult{Items: tt.containers}, nil)
 
-			var u Upstreams
 			err := u.provisionCandidates(ctx, cli)
 			require.NoError(t, err)
 
-			candidatesMu.RLock()
-			got := dials(candidates)
-			candidatesMu.RUnlock()
+			u.candidatesMu.RLock()
+			got := dials(u.candidates)
+			u.candidatesMu.RUnlock()
 
 			assert.ElementsMatch(t, tt.wantDials, got)
 			cli.AssertExpectations(t)
@@ -203,7 +203,8 @@ func TestProvisionCandidates(t *testing.T) {
 }
 
 func TestProvisionCandidatesBuildsMatchers(t *testing.T) {
-	withCandidates(t)
+	u := &Upstreams{}
+	withCandidates(t, u)
 	ctx := newTestContext(t)
 
 	cli := &mockDockerClient{}
@@ -218,26 +219,26 @@ func TestProvisionCandidatesBuildsMatchers(t *testing.T) {
 			),
 		}}, nil)
 
-	var u Upstreams
 	require.NoError(t, u.provisionCandidates(ctx, cli))
 
-	candidatesMu.RLock()
-	defer candidatesMu.RUnlock()
-	require.Len(t, candidates, 1)
+	u.candidatesMu.RLock()
+	defer u.candidatesMu.RUnlock()
+	require.Len(t, u.candidates, 1)
 	// The host matcher label must have produced exactly one matcher.
-	assert.Len(t, candidates[0].matchers, 1)
+	assert.Len(t, u.candidates[0].matchers, 1)
 
-	ok, err := candidates[0].matchers.MatchWithError(newRequest(t, "GET", "http://example.com/"))
+	ok, err := u.candidates[0].matchers.MatchWithError(newRequest(t, "GET", "http://example.com/"))
 	require.NoError(t, err)
 	assert.True(t, ok)
 
-	ok, err = candidates[0].matchers.MatchWithError(newRequest(t, "GET", "http://other.com/"))
+	ok, err = u.candidates[0].matchers.MatchWithError(newRequest(t, "GET", "http://other.com/"))
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
 
 func TestProvisionCandidatesListError(t *testing.T) {
-	withCandidates(t)
+	u := &Upstreams{}
+	withCandidates(t, u)
 	ctx := newTestContext(t)
 
 	sentinel := errors.New("boom")
@@ -245,7 +246,6 @@ func TestProvisionCandidatesListError(t *testing.T) {
 	cli.On("ContainerList", mock.Anything, mock.Anything).
 		Return(client.ContainerListResult{}, sentinel)
 
-	var u Upstreams
 	err := u.provisionCandidates(ctx, cli)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sentinel)

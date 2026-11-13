@@ -51,11 +51,6 @@ type candidate struct {
 	port     string // port from the upstream.port label; empty when the label is absent
 }
 
-var (
-	candidates   []candidate
-	candidatesMu sync.RWMutex
-)
-
 var defaultFilters = client.Filters{}.
 	Add("label", fmt.Sprintf("%s=true", LabelEnable)).
 	Add("status", "running") // container.State.Status
@@ -82,6 +77,12 @@ type Upstreams struct {
 
 	debounceInterval time.Duration
 	reconnectDelay   time.Duration
+
+	// Why was this moved here? Well, if you used something like Python, you might recognize the pattern straight away.
+	// Candidates was a global level value. And since we moved health filtering to in-plugin, this might cause some issues.
+	// Is the Mutex strictly needed? Not really, but better safe than sorry, you never know what memory gremlins might occur.
+	candidates   []candidate
+	candidatesMu sync.RWMutex
 }
 
 func (Upstreams) CaddyModule() caddy.ModuleInfo {
@@ -107,6 +108,25 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 	for _, c := range containers.Items {
 		// Build matchers.
 		matchers := buildMatchers(ctx, c.Labels)
+		
+		// We did not send a "health" filter due to inconsistent implementations
+		// between different backends (Docker, Podman, etc.). Instead, we will
+		// handle the health check ourselves.
+		// Firstly, let's check if we are supposed to querry about this container. 
+		// Make the candidate now, we will append address later if needed.
+		newCandidate := candidate{
+			matchers: matchers,
+			labels:   c.Labels,
+			port:     c.Labels[LabelUpstreamPort],
+		}
+		// Now do u.selects
+		if !u.selects(newCandidate) {
+			continue
+		}
+		// Now we perform the health check.
+		if !u.isHealthEligible(ctx, cli, c.ID) {
+			continue
+		}
 
 		// Candidates are shared by every dynamic docker block, so provisioning
 		// must not fold in per-block configuration such as the port directive.
@@ -115,78 +135,60 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 
 		// Containers sharing the host's network namespace have no address of
 		// their own; dialing the bare port reaches that namespace.
-		if c.HostConfig.NetworkMode == "host" {
-			updated = append(updated, candidate{
-				matchers: matchers,
-				labels:   c.Labels,
-				port:     c.Labels[LabelUpstreamPort],
-			})
-			continue
-		}
-
-		// Choose network to connect.
-		if len(c.NetworkSettings.Networks) == 0 {
-			ctx.Logger().Error("unable to get ip address from container networks",
-				zap.String("container_id", c.ID),
-			)
-			continue
-		}
-
-		var address string
-		network, ok := c.Labels[LabelNetwork]
-		if !ok {
-			// Use the first network settings of container.
-			for _, settings := range c.NetworkSettings.Networks {
-				address = settings.IPAddress.String()
-				break
+		// If this is the case, this block is skipped.
+		// Otherwise, attempt to learn the network and address.
+		if c.HostConfig.NetworkMode != "host" {
+			// Choose network to connect.
+			if len(c.NetworkSettings.Networks) == 0 {
+				ctx.Logger().Error("unable to get ip address from container networks",
+					zap.String("container_id", c.ID),
+				)
+				continue
 			}
-		} else {
-			settings, ok := c.NetworkSettings.Networks[network]
+
+			var address string
+			network, ok := c.Labels[LabelNetwork]
 			if !ok {
-				// Add project prefix. See also https://github.com/compose-spec/compose-go/blob/main/loader/normalize.go.
-				const projectLabel = "com.docker.compose.project"
-				project, ok := c.Labels[projectLabel]
-				if !ok {
-					ctx.Logger().Error("unable to get network settings from container",
-						zap.String("container_id", c.ID),
-						zap.String("network", network),
-					)
-					continue
+				// Use the first network settings of container.
+				for _, settings := range c.NetworkSettings.Networks {
+					address = settings.IPAddress.String()
+					break
 				}
+			} else {
+				settings, ok := c.NetworkSettings.Networks[network]
+				if !ok {
+					// Add project prefix. See also https://github.com/compose-spec/compose-go/blob/main/loader/normalize.go.
+					const projectLabel = "com.docker.compose.project"
+					project, ok := c.Labels[projectLabel]
+					if !ok {
+						ctx.Logger().Error("unable to get network settings from container",
+							zap.String("container_id", c.ID),
+							zap.String("network", network),
+						)
+						continue
+					}
 
-				network = fmt.Sprintf("%s_%s", project, network)
-				settings, ok = c.NetworkSettings.Networks[network]
-				if !ok {
-					ctx.Logger().Error("unable to get network settings from container",
-						zap.String("container_id", c.ID),
-						zap.String("network", network),
-					)
-					continue
+					network = fmt.Sprintf("%s_%s", project, network)
+					settings, ok = c.NetworkSettings.Networks[network]
+					if !ok {
+						ctx.Logger().Error("unable to get network settings from container",
+							zap.String("container_id", c.ID),
+							zap.String("network", network),
+						)
+						continue
+					}
 				}
+				address = settings.IPAddress.String()
 			}
-			address = settings.IPAddress.String()
+			newCandidate.address = address
 		}
 
-		// We did not send a "health" filter due to inconsistent implementations
-		// between different backends (Docker, Podman, etc.). Instead, we will
-		// handle the health check ourselves.
-		// We execute this check at the end so we only querry for containers we're
-		// supposed to handle. This prevents overloading the container backend.
-		if !u.isHealthEligible(ctx, cli, c.ID) {
-			continue
-		}
-
-		updated = append(updated, candidate{
-			matchers: matchers,
-			labels:   c.Labels,
-			address:  address,
-			port:     c.Labels[LabelUpstreamPort],
-		})
+		updated = append(updated, newCandidate)
 	}
 
-	candidatesMu.Lock()
-	candidates = updated
-	candidatesMu.Unlock()
+	u.candidatesMu.Lock()
+	u.candidates = updated
+	u.candidatesMu.Unlock()
 
 	return nil
 }
@@ -282,10 +284,10 @@ func (u *Upstreams) Provision(ctx caddy.Context) error {
 func (u *Upstreams) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {
 	upstreams := make([]*reverseproxy.Upstream, 0, 1)
 
-	candidatesMu.RLock()
-	defer candidatesMu.RUnlock()
+	u.candidatesMu.RLock()
+	defer u.candidatesMu.RUnlock()
 
-	for _, c := range candidates {
+	for _, c := range u.candidates {
 		if !u.selects(c) {
 			continue
 		}

@@ -105,13 +105,6 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 	updated := make([]candidate, 0, len(containers.Items))
 
 	for _, c := range containers.Items {
-		// We did not send a "health" filter due to inconsistent implementations
-		// between different backends (Docker, Podman, etc.). Instead, we will
-		// handle the health check ourselves.
-		if !u.isHealthEligible(ctx, cli, c.ID) {
-			continue
-		}
-
 		// Build matchers.
 		matchers := buildMatchers(ctx, c.Labels)
 
@@ -172,6 +165,15 @@ func (u *Upstreams) provisionCandidates(ctx caddy.Context, cli dockerClient) err
 				}
 			}
 			address = settings.IPAddress.String()
+		}
+
+		// We did not send a "health" filter due to inconsistent implementations
+		// between different backends (Docker, Podman, etc.). Instead, we will
+		// handle the health check ourselves.
+		// We execute this check at the end so we only querry for containers we're
+		// supposed to handle. This prevents overloading the container backend.
+		if !u.isHealthEligible(ctx, cli, c.ID) {
+			continue
 		}
 
 		updated = append(updated, candidate{

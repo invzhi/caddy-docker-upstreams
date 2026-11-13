@@ -501,7 +501,7 @@ func TestProvisionCandidatesHealthEligibility(t *testing.T) {
 			if id == "disabled" {
 				test = []string{"NONE"}
 			}
-			status := "unhealthy"
+			status := container.HealthStatus("unhealthy")
 			if id == "healthy" {
 				status = container.Healthy
 			}

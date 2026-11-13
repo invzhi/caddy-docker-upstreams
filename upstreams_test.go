@@ -3,9 +3,12 @@ package caddy_docker_upstreams
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -453,4 +456,105 @@ func TestKeepUpdatedReturnsOnContextCancelDuringBackoff(t *testing.T) {
 	// It must have returned via ctx.Done(), without reconnecting.
 	docker.AssertNumberOfCalls(t, "Events", 1)
 	docker.AssertExpectations(t)
+}
+
+func TestProvisionSharesWatcherUntilLastCleanup(t *testing.T) {
+	withCandidates(t)
+	previousClients := clients
+	clients = caddy.NewUsagePool()
+	t.Cleanup(func() { clients = previousClients })
+
+	var pings, subscriptions, lists atomic.Int64
+	events := make(chan struct{})
+	watcherClosed := make(chan struct{}, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/_ping":
+			pings.Add(1)
+			w.Header().Set("Api-Version", "1.55")
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/containers/json"):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, "[]")
+			lists.Add(1)
+		case strings.HasSuffix(r.URL.Path, "/events"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			subscriptions.Add(1)
+			defer func() { watcherClosed <- struct{}{} }()
+			for {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-events:
+					fmt.Fprintln(w, `{"Type":"container","Action":"start"}`)
+					w.(http.Flusher).Flush()
+				}
+			}
+		default:
+			t.Errorf("unexpected Docker request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(server.URL, "http://"))
+	t.Setenv("DOCKER_TLS_VERIFY", "")
+	t.Setenv("DOCKER_CERT_PATH", "")
+	t.Setenv("DOCKER_API_VERSION", "")
+
+	upstreams := make([]*Upstreams, 0, 3)
+	t.Cleanup(func() {
+		for _, u := range upstreams {
+			assert.NoError(t, u.Cleanup())
+		}
+	})
+
+	for range 3 {
+		ctx, _ := newCancelableContext(t)
+		u := new(Upstreams)
+		require.NoError(t, u.Provision(ctx))
+		upstreams = append(upstreams, u)
+	}
+	require.Eventually(t, func() bool {
+		return subscriptions.Load() == 1
+	}, 2*time.Second, time.Millisecond)
+	assert.EqualValues(t, 1, pings.Load(), "only one Docker client should be initialized")
+	assert.EqualValues(t, 1, lists.Load(), "initial candidates should be fetched once")
+
+	// Each partial cleanup must leave the original watcher able to refresh
+	// candidates for the remaining upstreams.
+	for len(upstreams) > 1 {
+		u := upstreams[0]
+		upstreams = upstreams[1:]
+		require.NoError(t, u.Cleanup())
+		select {
+		case <-watcherClosed:
+			t.Fatal("watcher closed while upstreams still reference it")
+		default:
+		}
+
+		previousLists := lists.Load()
+		select {
+		case events <- struct{}{}:
+		case <-time.After(2 * time.Second):
+			t.Fatal("watcher stopped receiving events before final cleanup")
+		}
+		require.Eventually(t, func() bool {
+			return lists.Load() == previousLists+1
+		}, 2*time.Second, time.Millisecond)
+		assert.EqualValues(t, 1, subscriptions.Load(), "the same watcher must remain active")
+	}
+
+	u := upstreams[0]
+	upstreams = nil
+	require.NoError(t, u.Cleanup())
+	select {
+	case <-watcherClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher did not close after the last upstream was cleaned up")
+	}
+	assert.EqualValues(t, 1, subscriptions.Load())
+	_, exists := clients.References(key)
+	assert.False(t, exists, "the shared client must be released after final cleanup")
 }

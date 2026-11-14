@@ -189,8 +189,8 @@ func TestGetUpstreamsPortIsolatedPerInstance(t *testing.T) {
 	beta := &Upstreams{Port: "5002", Labels: map[string][]string{"com.docker.compose.service": {"beta"}}}
 
 	// Both blocks provision into the one shared candidate list; beta runs last.
-	require.NoError(t, newTestDocker(ctx, docker).provisionCandidates())
-	require.NoError(t, newTestDocker(ctx, docker).provisionCandidates())
+	require.NoError(t, newTestDocker(ctx, docker).refreshCandidates())
+	require.NoError(t, newTestDocker(ctx, docker).refreshCandidates())
 
 	req := newRequest(t, http.MethodGet, "http://localhost/")
 

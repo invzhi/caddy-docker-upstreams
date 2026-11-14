@@ -193,7 +193,7 @@ func TestProvisionCandidates(t *testing.T) {
 			docker.On("ContainerList", mock.Anything, mock.Anything).
 				Return(client.ContainerListResult{Items: tt.containers}, nil)
 
-			err := newTestDocker(ctx, docker).provisionCandidates()
+			err := newTestDocker(ctx, docker).refreshCandidates()
 			require.NoError(t, err)
 
 			candidatesMu.RLock()
@@ -222,7 +222,7 @@ func TestProvisionCandidatesBuildsMatchers(t *testing.T) {
 			),
 		}}, nil)
 
-	require.NoError(t, newTestDocker(ctx, docker).provisionCandidates())
+	require.NoError(t, newTestDocker(ctx, docker).refreshCandidates())
 
 	candidatesMu.RLock()
 	defer candidatesMu.RUnlock()
@@ -248,7 +248,7 @@ func TestProvisionCandidatesListError(t *testing.T) {
 	docker.On("ContainerList", mock.Anything, mock.Anything).
 		Return(client.ContainerListResult{}, sentinel)
 
-	err := newTestDocker(ctx, docker).provisionCandidates()
+	err := newTestDocker(ctx, docker).refreshCandidates()
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sentinel)
 	docker.AssertExpectations(t)
@@ -389,6 +389,8 @@ func TestKeepUpdatedReconnectsAfterError(t *testing.T) {
 	docker := &mockDockerClient{}
 	// First connection, then a fresh connection after the reconnect delay.
 	docker.On("Events", mock.Anything, mock.Anything).Return(first.result()).Once()
+	docker.On("ContainerList", mock.Anything, mock.Anything).
+		Return(oneContainerResult(), nil)
 	docker.On("Events", mock.Anything, mock.Anything).Return(second.result()).Once()
 
 	done := make(chan struct{})

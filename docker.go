@@ -74,7 +74,7 @@ func NewDocker(logger *zap.Logger) (*Docker, error) {
 
 	ctx, cancel := context.WithCancel(ctx)
 	d := &Docker{ctx: ctx, cancel: cancel, logger: logger, docker: docker}
-	if err := d.provisionCandidates(); err != nil {
+	if err := d.refreshCandidates(); err != nil {
 		return nil, err
 	}
 	go d.keepUpdated()
@@ -82,7 +82,7 @@ func NewDocker(logger *zap.Logger) (*Docker, error) {
 	return d, nil
 }
 
-func (d *Docker) provisionCandidates() error {
+func (d *Docker) refreshCandidates() error {
 	containers, err := d.ContainerList(d.ctx, client.ContainerListOptions{Filters: defaultFilters})
 	if err != nil {
 		return fmt.Errorf("listing docker containers: %w", err)
@@ -183,7 +183,7 @@ func (d *Docker) keepUpdated() {
 				return
 			case <-messages.Messages:
 				debounced(func() {
-					err := d.provisionCandidates()
+					err := d.refreshCandidates()
 					if err != nil {
 						d.logger.Error("unable to provision the candidates", zap.Error(err))
 					}
@@ -202,6 +202,10 @@ func (d *Docker) keepUpdated() {
 		case <-d.ctx.Done():
 			return
 		case <-time.After(defaultReconnectDuraiton):
+			err := d.refreshCandidates()
+			if err != nil {
+				d.logger.Error("unable to provision the candidates", zap.Error(err))
+			}
 		}
 	}
 }

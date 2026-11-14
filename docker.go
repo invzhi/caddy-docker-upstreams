@@ -87,10 +87,8 @@ func (d *Docker) containerHealthStatus(c container.Summary) (container.HealthSta
 		return c.Health.Status, nil
 	}
 
-	// Older Podman versions and API versions below 1.52 omit Health from list
-	// responses, so fall back to inspecting the container.
-	// See https://github.com/podman-container-tools/podman/commit/c4a4c7e1172e8f68c1801d9c7ce9b0d3f1bdda48.
-
+	// Docker API 1.52 added Health to container list responses. For older APIs
+	// and compatible servers that omit it, inspect the container instead.
 	result, err := d.ContainerInspect(d.ctx, c.ID, client.ContainerInspectOptions{})
 	if err != nil {
 		return "", fmt.Errorf("inspecting container: %w", err)
@@ -100,9 +98,8 @@ func (d *Docker) containerHealthStatus(c container.Summary) (container.HealthSta
 		return "", errors.New("container state is null")
 	}
 
-	// Podman leaves State.Health nil for containers without a healthcheck.
-	// Treat that as NoHealthcheck so they remain eligible as candidates.
-	// See https://github.com/containers/podman/blob/a6a942f/libpod/container_inspect.go#L197-L208.
+	// Inspect State.Health is optional: nil means no healthcheck is configured,
+	// including on current Docker API versions and compatible servers.
 	if result.Container.State.Health == nil {
 		return container.NoHealthcheck, nil
 	}

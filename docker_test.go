@@ -209,8 +209,8 @@ func TestProvisionCandidates(t *testing.T) {
 }
 
 func TestProvisionCandidatesHealth(t *testing.T) {
-	// Podman includes list health for API >= 1.52 (or unversioned requests).
-	// Older responses omit it; inspect then distinguishes no healthcheck
+	// Docker API >= 1.52 includes list health. Older APIs and some compatible
+	// servers omit it; inspect then distinguishes no healthcheck
 	// (State.Health == nil) from a configured check that is not healthy.
 	tests := []struct {
 		name          string
@@ -262,7 +262,7 @@ func TestProvisionCandidatesHealth(t *testing.T) {
 			wantCandidate: false,
 		},
 		{
-			name:          "inspect/podman no healthcheck has nil Health",
+			name:          "inspect/no healthcheck has nil Health",
 			listHealth:    nil,
 			inspectState:  &container.State{Health: nil},
 			inspectErr:    nil,
@@ -333,8 +333,8 @@ func TestProvisionCandidatesHealth(t *testing.T) {
 			docker := &mockDockerClient{}
 			docker.Test(t)
 			t.Cleanup(func() { docker.AssertExpectations(t) })
-			// Keep the enable/running filters, but never send the incompatible
-			// server health filter that can hide Podman containers.
+			// Keep the enable/running filters and evaluate health locally so
+			// containers without healthchecks are included across compatible servers.
 			wantFilters := client.Filters{}.
 				Add("label", LabelEnable+"=true").
 				Add("status", "running")

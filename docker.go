@@ -28,8 +28,7 @@ const (
 
 var defaultFilters = client.Filters{}.
 	Add("label", fmt.Sprintf("%s=true", LabelEnable)).
-	Add("status", "running"). // container.State.Status
-	Add("health", string(container.Healthy), string(container.NoHealthcheck))
+	Add("status", "running") // container.State.Status
 
 var (
 	candidates   []candidate
@@ -47,6 +46,7 @@ type candidate struct {
 // Its purpose is to allow testing this module with mocks.
 type docker interface {
 	ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	ContainerInspect(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
 	Events(ctx context.Context, options client.EventsListOptions) client.EventsResult
 	Close() error
 }
@@ -82,6 +82,34 @@ func NewDocker(logger *zap.Logger) (*Docker, error) {
 	return d, nil
 }
 
+func (d *Docker) containerHealthStatus(c container.Summary) (container.HealthStatus, error) {
+	if c.Health != nil {
+		return c.Health.Status, nil
+	}
+
+	// Older Podman versions and API versions below 1.52 omit Health from list
+	// responses, so fall back to inspecting the container.
+	// See https://github.com/podman-container-tools/podman/commit/c4a4c7e1172e8f68c1801d9c7ce9b0d3f1bdda48.
+
+	result, err := d.ContainerInspect(d.ctx, c.ID, client.ContainerInspectOptions{})
+	if err != nil {
+		return "", fmt.Errorf("inspecting container: %w", err)
+	}
+
+	if result.Container.State == nil {
+		return "", errors.New("container state is null")
+	}
+
+	// Podman leaves State.Health nil for containers without a healthcheck.
+	// Treat that as NoHealthcheck so they remain eligible as candidates.
+	// See https://github.com/containers/podman/blob/a6a942f/libpod/container_inspect.go#L197-L208.
+	if result.Container.State.Health == nil {
+		return container.NoHealthcheck, nil
+	}
+
+	return result.Container.State.Health.Status, nil
+}
+
 func (d *Docker) refreshCandidates() error {
 	containers, err := d.ContainerList(d.ctx, client.ContainerListOptions{Filters: defaultFilters})
 	if err != nil {
@@ -91,6 +119,18 @@ func (d *Docker) refreshCandidates() error {
 	updated := make([]candidate, 0, len(containers.Items))
 
 	for _, c := range containers.Items {
+		healthStatus, err := d.containerHealthStatus(c)
+		if err != nil {
+			d.logger.Error("unable to get container health state",
+				zap.String("container_id", c.ID),
+				zap.Error(err),
+			)
+			continue
+		}
+		if healthStatus != container.NoHealthcheck && healthStatus != container.Healthy {
+			continue
+		}
+
 		// Build matchers.
 		matchers := buildMatchers(d.ctx, d.logger, c.Labels)
 

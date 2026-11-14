@@ -42,6 +42,7 @@ func summary(id string, labels map[string]string, networks map[string]string) co
 	}
 	return container.Summary{
 		ID:              id,
+		Health:          &container.HealthSummary{Status: container.NoHealthcheck},
 		Labels:          labels,
 		NetworkSettings: &container.NetworkSettingsSummary{Networks: nets},
 	}
@@ -52,6 +53,7 @@ func summary(id string, labels map[string]string, networks map[string]string) co
 func hostNetworkSummary(id string, labels map[string]string) container.Summary {
 	c := container.Summary{
 		ID:     id,
+		Health: &container.HealthSummary{Status: container.NoHealthcheck},
 		Labels: labels,
 		NetworkSettings: &container.NetworkSettingsSummary{
 			Networks: map[string]*network.EndpointSettings{"host": {}},
@@ -206,6 +208,160 @@ func TestProvisionCandidates(t *testing.T) {
 	}
 }
 
+func TestProvisionCandidatesHealth(t *testing.T) {
+	// Podman includes list health for API >= 1.52 (or unversioned requests).
+	// Older responses omit it; inspect then distinguishes no healthcheck
+	// (State.Health == nil) from a configured check that is not healthy.
+	tests := []struct {
+		name          string
+		listHealth    *container.HealthSummary
+		inspectState  *container.State
+		inspectErr    error
+		wantCandidate bool
+	}{
+		{
+			name:          "list/no healthcheck",
+			listHealth:    &container.HealthSummary{Status: container.NoHealthcheck},
+			inspectState:  nil,
+			inspectErr:    nil,
+			wantCandidate: true,
+		},
+		{
+			name:          "list/healthy",
+			listHealth:    &container.HealthSummary{Status: container.Healthy},
+			inspectState:  nil,
+			inspectErr:    nil,
+			wantCandidate: true,
+		},
+		{
+			name:          "list/starting",
+			listHealth:    &container.HealthSummary{Status: container.Starting},
+			inspectState:  nil,
+			inspectErr:    nil,
+			wantCandidate: false,
+		},
+		{
+			name:          "list/unhealthy",
+			listHealth:    &container.HealthSummary{Status: container.Unhealthy},
+			inspectState:  nil,
+			inspectErr:    nil,
+			wantCandidate: false,
+		},
+		{
+			name:          "list/unknown status",
+			listHealth:    &container.HealthSummary{Status: "unknown"},
+			inspectState:  nil,
+			inspectErr:    nil,
+			wantCandidate: false,
+		},
+		{
+			name:          "list/empty status is not no healthcheck",
+			listHealth:    &container.HealthSummary{Status: ""},
+			inspectState:  nil,
+			inspectErr:    nil,
+			wantCandidate: false,
+		},
+		{
+			name:          "inspect/podman no healthcheck has nil Health",
+			listHealth:    nil,
+			inspectState:  &container.State{Health: nil},
+			inspectErr:    nil,
+			wantCandidate: true,
+		},
+		{
+			name:          "inspect/healthy",
+			listHealth:    nil,
+			inspectState:  &container.State{Health: &container.Health{Status: container.Healthy}},
+			inspectErr:    nil,
+			wantCandidate: true,
+		},
+		{
+			name:          "inspect/starting",
+			listHealth:    nil,
+			inspectState:  &container.State{Health: &container.Health{Status: container.Starting}},
+			inspectErr:    nil,
+			wantCandidate: false,
+		},
+		{
+			name:          "inspect/unhealthy",
+			listHealth:    nil,
+			inspectState:  &container.State{Health: &container.Health{Status: container.Unhealthy}},
+			inspectErr:    nil,
+			wantCandidate: false,
+		},
+		{
+			name:          "inspect/unknown status",
+			listHealth:    nil,
+			inspectState:  &container.State{Health: &container.Health{Status: "unknown"}},
+			inspectErr:    nil,
+			wantCandidate: false,
+		},
+		{
+			name:          "inspect/empty status is not no healthcheck",
+			listHealth:    nil,
+			inspectState:  &container.State{Health: &container.Health{Status: ""}},
+			inspectErr:    nil,
+			wantCandidate: false,
+		},
+		{
+			name:          "inspect/missing State is not no healthcheck",
+			listHealth:    nil,
+			inspectState:  nil,
+			inspectErr:    nil,
+			wantCandidate: false,
+		},
+		{
+			name:          "inspect/container disappeared after list",
+			listHealth:    nil,
+			inspectState:  nil,
+			inspectErr:    errors.New("no such container"),
+			wantCandidate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withCandidates(t)
+			ctx := newTestContext(t)
+			// Previously eligible containers must be removed if health changes
+			// or inspection fails, and stale entries must not survive a refresh.
+			candidates = []candidate{{address: "10.0.0.1", port: "8080"}, {address: "10.0.0.99"}}
+			c := summary("a", map[string]string{LabelUpstreamPort: "8080"}, map[string]string{"bridge": "10.0.0.1"})
+			c.Health = tt.listHealth
+			// A later container must still be processed when a is skipped.
+			peer := summary("b", map[string]string{LabelUpstreamPort: "9090"}, map[string]string{"bridge": "10.0.0.2"})
+			docker := &mockDockerClient{}
+			docker.Test(t)
+			t.Cleanup(func() { docker.AssertExpectations(t) })
+			// Keep the enable/running filters, but never send the incompatible
+			// server health filter that can hide Podman containers.
+			wantFilters := client.Filters{}.
+				Add("label", LabelEnable+"=true").
+				Add("status", "running")
+			docker.On("ContainerList", ctx, client.ContainerListOptions{Filters: wantFilters}).
+				Return(client.ContainerListResult{Items: []container.Summary{c, peer}}, nil).Once()
+			if tt.listHealth == nil {
+				docker.On("ContainerInspect", ctx, "a", client.ContainerInspectOptions{}).
+					Return(client.ContainerInspectResult{Container: container.InspectResponse{State: tt.inspectState}}, tt.inspectErr).Once()
+			}
+
+			require.NoError(t, newTestDocker(ctx, docker).refreshCandidates())
+			if tt.listHealth != nil {
+				docker.AssertNotCalled(t, "ContainerInspect", mock.Anything, mock.Anything, mock.Anything)
+			}
+
+			wantDials := []string{"10.0.0.2:9090"}
+			if tt.wantCandidate {
+				wantDials = append(wantDials, "10.0.0.1:8080")
+			}
+			candidatesMu.RLock()
+			gotDials := dials(candidates)
+			candidatesMu.RUnlock()
+			assert.ElementsMatch(t, wantDials, gotDials)
+		})
+	}
+}
+
 func TestProvisionCandidatesBuildsMatchers(t *testing.T) {
 	withCandidates(t)
 	ctx := newTestContext(t)
@@ -272,6 +428,11 @@ func (m *mockDockerClient) ContainerList(ctx context.Context, options client.Con
 	return args.Get(0).(client.ContainerListResult), args.Error(1)
 }
 
+func (m *mockDockerClient) ContainerInspect(ctx context.Context, id string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+	args := m.Called(ctx, id, options)
+	return args.Get(0).(client.ContainerInspectResult), args.Error(1)
+}
+
 func (m *mockDockerClient) Events(ctx context.Context, options client.EventsListOptions) client.EventsResult {
 	m.eventsCalls.Add(1)
 	return m.Called(ctx, options).Get(0).(client.EventsResult)
@@ -304,6 +465,7 @@ func (s eventStream) result() client.EventsResult {
 func oneContainerResult() client.ContainerListResult {
 	return client.ContainerListResult{Items: []container.Summary{{
 		ID:     "a",
+		Health: &container.HealthSummary{Status: container.NoHealthcheck},
 		Labels: map[string]string{LabelUpstreamPort: "8080"},
 		NetworkSettings: &container.NetworkSettingsSummary{
 			Networks: map[string]*network.EndpointSettings{
